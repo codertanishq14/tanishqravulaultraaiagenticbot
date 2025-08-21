@@ -43,3 +43,6 @@ moviepy
 gTTS
 requests
 
+# --- PRODUCTION DEPLOYMENT ADDITIONS ---
+gunicorn  # Production WSGI server
+boto3     # AWS SDK for Python (to upload to S3)
