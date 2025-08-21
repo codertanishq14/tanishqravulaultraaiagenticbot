@@ -1,5 +1,5 @@
 // static/js/script.js
-// Updated with PDF Export Feature AND FIX for attachment preview
+// FINAL CORRECTED VERSION: Fixes the 'undefined' attachment bug.
 
 document.addEventListener("DOMContentLoaded", () => {
     // --- DOM Elements ---
@@ -24,6 +24,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const userIdManagerDiv = document.getElementById("user-id-manager");
     const largeFileAttachBtn = document.getElementById("large-file-attach-btn");
     const largeFileInput = document.getElementById("large-file-input");
+
+    // --- User ID Modal Elements ---
     const userIdModal = document.getElementById("user-id-modal");
     const userIdDisplayArea = document.getElementById("user-id-display-area");
     const newUserIdDisplay = document.getElementById("new-user-id-display");
@@ -97,13 +99,9 @@ document.addEventListener("DOMContentLoaded", () => {
         messageDiv.className = `message ${role}-message`;
         const contentDiv = document.createElement("div");
         contentDiv.className = "message-content";
-        if (role === 'user') {
-            const p = document.createElement('p');
-            p.textContent = content;
-            contentDiv.appendChild(p);
-        } else {
-            contentDiv.innerHTML = marked.parse(content);
-        }
+        const p = document.createElement('p');
+        p.textContent = content;
+        contentDiv.appendChild(p);
         messageDiv.appendChild(contentDiv);
         messageContainer.appendChild(messageDiv);
         messageContainer.scrollTop = messageContainer.scrollHeight;
@@ -163,37 +161,28 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     };
 
-    // --- C. Data & API Calls (UPDATED with PDF Export Logic) ---
+    // --- C. Data & API Calls ---
     const loadChatHistory = async () => {
         if (!currentUserId) return;
         try {
-            const response = await fetch('/api/history', {
-                headers: { 'X-User-ID': currentUserId }
-            });
-            if (response.status === 401) {
-                console.error("Invalid or missing User ID.");
-                localStorage.removeItem('chatHistoryUserId');
-                window.location.reload();
-                return;
-            }
+            const response = await fetch('/api/history', { headers: { 'X-User-ID': currentUserId } });
+            if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
             const history = await response.json();
             chatHistoryList.innerHTML = "";
             history.forEach(chat => {
                 const li = document.createElement("li");
                 li.dataset.chatId = chat.id;
-
                 const titleSpan = document.createElement("span");
                 titleSpan.className = "chat-title";
                 titleSpan.textContent = chat.title;
                 li.appendChild(titleSpan);
 
-                // ### NEW PDF EXPORT BUTTON ###
                 const exportBtn = document.createElement("button");
                 exportBtn.className = "export-btn";
                 exportBtn.title = "Export to PDF";
                 exportBtn.innerHTML = '<i class="fas fa-file-pdf"></i>';
                 exportBtn.addEventListener("click", (e) => {
-                    e.stopPropagation(); 
+                    e.stopPropagation();
                     exportChatToPdf(chat.id, exportBtn);
                 });
                 li.appendChild(exportBtn);
@@ -208,19 +197,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const loadConversation = async (chatId) => {
         if (!currentUserId) return;
         try {
-            const response = await fetch(`/api/history/${chatId}`, {
-                headers: { 'X-User-ID': currentUserId }
-            });
+            const response = await fetch(`/api/history/${chatId}`, { headers: { 'X-User-ID': currentUserId } });
             if (!response.ok) throw new Error("Conversation not found");
             const conversation = await response.json();
             messageContainer.innerHTML = "";
             conversation.messages.forEach(msg => {
                 const content = msg.parts.join("\n");
                 const role = msg.role === 'model' ? 'bot' : 'user';
-                const msgEl = renderMessage(role, content);
+                renderMessage(role, content);
                 if (role === 'bot') {
-                    msgEl.dataset.rawContent = content;
-                    finalizeBotMessage(msgEl);
+                    // This logic seems a bit redundant if we render from scratch, but let's ensure it's correct.
+                    const botMessages = messageContainer.querySelectorAll('.bot-message .message-content');
+                    const lastBotMessage = botMessages[botMessages.length -1];
+                    lastBotMessage.dataset.rawContent = content;
+                    finalizeBotMessage(lastBotMessage);
                 }
             });
             currentChatId = chatId;
@@ -231,7 +221,6 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (error) { console.error("Error loading conversation:", error); }
     };
 
-    // ### NEW PDF EXPORT FUNCTION ###
     const exportChatToPdf = async (chatId, buttonElement) => {
         const originalIcon = buttonElement.innerHTML;
         buttonElement.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
@@ -242,34 +231,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 method: 'GET',
                 headers: { 'X-User-ID': currentUserId }
             });
-
             if (!response.ok) {
-                const errorData = await response.json().catch(() => {
-                    return { error: "Server returned a non-JSON response. Is the PDF route missing in app.py?" };
-                });
-                throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
+                const errorData = await response.json().catch(() => ({ error: "Server returned an unexpected error." }));
+                throw new Error(errorData.error);
             }
-
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.style.display = 'none';
             a.href = url;
-            const disposition = response.headers.get('content-disposition');
-            let filename = `chat-history-${chatId}.pdf`;
-            if (disposition && disposition.indexOf('attachment') !== -1) {
-                const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
-                const matches = filenameRegex.exec(disposition);
-                if (matches != null && matches[1]) { 
-                  filename = matches[1].replace(/['"]/g, '');
-                }
-            }
-            a.download = filename;
+            a.download = `chat-history-${chatId}.pdf`;
             document.body.appendChild(a);
             a.click();
+            a.remove();
             window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-
         } catch (error) {
             console.error('Error exporting PDF:', error);
             alert(`Failed to export PDF: ${error.message}`);
@@ -288,95 +262,161 @@ document.addEventListener("DOMContentLoaded", () => {
             messageContainer.innerHTML = '<div class="message bot-message"><div class="message-content"><p>New chat started. How can I assist you?</p></div></div>';
             promptInput.value = "";
             document.querySelectorAll('#chat-history-list li').forEach(li => li.classList.remove('active'));
-            resetAttachments(true);
+            resetAttachments();
             closeSidebar();
         });
         chatForm.addEventListener("submit", handleChatSubmit);
         promptInput.addEventListener('input', autoResizeTextarea);
         promptInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatForm.dispatchEvent(new Event('submit')); } });
+        
+        // Attachment Listeners with FIXES
         fileAttachBtn.addEventListener('click', () => fileInput.click());
-        fileInput.addEventListener('change', (e) => { if (e.target.files.length > 0) { resetAttachments(); attachedFile = e.target.files[0]; showAttachmentPreview(attachedFile.name, 'file'); } });
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                resetAttachments();
+                // ### FIX ###: Get the first file from the FileList
+                attachedFile = e.target.files[0]; 
+                // ### FIX ###: Now attachedFile.name is valid
+                showAttachmentPreview(attachedFile.name, 'file'); 
+                fileInput.value = ''; 
+            }
+        });
+        
         largeFileAttachBtn.addEventListener('click', () => largeFileInput.click());
-        largeFileInput.addEventListener('change', (e) => { if (e.target.files.length > 0) { resetAttachments(); attachedLargeFiles = Array.from(e.target.files); const previewText = attachedLargeFiles.length > 1 ? `${attachedLargeFiles.length} large files` : attachedLargeFiles[0].name; showAttachmentPreview(previewText, 'fa-file-zipper'); } });
-        urlAttachBtn.addEventListener('click', () => { const url = prompt("Enter a YouTube or Website URL:"); if (url) { resetAttachments(true); attachedUrl = url; showAttachmentPreview(url, 'url'); } });
+        largeFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                resetAttachments();
+                attachedLargeFiles = Array.from(e.target.files);
+                // ### FIX ###: Check length and access attachedLargeFiles[0].name if single
+                const name = attachedLargeFiles.length > 1 ? `${attachedLargeFiles.length} large files` : attachedLargeFiles[0].name;
+                showAttachmentPreview(name, 'fa-file-zipper');
+                largeFileInput.value = '';
+            }
+        });
+        // ### END FIX ###
+
+        urlAttachBtn.addEventListener('click', () => { const url = prompt("Enter a YouTube or Website URL:"); if (url) { resetAttachments(); attachedUrl = url; showAttachmentPreview(url, 'url'); } });
         screenShareBtn.addEventListener("click", handleScreenShareClick);
+
+        // Media Gen Listeners
         imageGenBtn.addEventListener("click", () => showModal('image'));
         videoGenBtn.addEventListener("click", () => showModal('video'));
         modalCloseBtn.addEventListener("click", hideModal);
         generationModal.addEventListener("click", (e) => { if (e.target === generationModal) hideModal(); });
         modalForm.addEventListener("submit", handleMediaFormSubmit);
     }
-    generateUserIdBtn.addEventListener('click', async () => { try { const response = await fetch('/api/user/new'); const data = await response.json(); if (data.user_id) { newUserIdDisplay.value = data.user_id; userIdChoiceArea.style.display = 'none'; userIdDisplayArea.style.display = 'block'; } } catch (error) { console.error("Failed to generate user ID", error); alert("Could not generate a new User ID."); } });
+    
+    // User ID Modal Listeners
+    generateUserIdBtn.addEventListener('click', async () => { try { const r = await fetch('/api/user/new'), d = await r.json(); if (d.user_id) { newUserIdDisplay.value = d.user_id; userIdChoiceArea.style.display = 'none'; userIdDisplayArea.style.display = 'block'; } } catch (e) { alert("Could not generate a new User ID."); } });
     copyUserIdBtn.addEventListener('click', () => { newUserIdDisplay.select(); document.execCommand('copy'); copyUserIdBtn.innerHTML = '<i class="fas fa-check"></i>'; setTimeout(() => { copyUserIdBtn.innerHTML = '<i class="fas fa-copy"></i>'; }, 2000); });
-    confirmUserIdSavedBtn.addEventListener('click', () => { const newId = newUserIdDisplay.value; if (newId) { localStorage.setItem('chatHistoryUserId', newId); currentUserId = newId; initializeApp(); } });
+    confirmUserIdSavedBtn.addEventListener('click', () => { const id = newUserIdDisplay.value; if (id) { localStorage.setItem('chatHistoryUserId', id); currentUserId = id; initializeApp(); } });
     existingUserIdBtn.addEventListener('click', () => { userIdChoiceArea.style.display = 'none'; userIdInputArea.style.display = 'block'; existingUserIdInput.focus(); });
-    submitExistingUserIdBtn.addEventListener('click', () => { const existingId = existingUserIdInput.value.trim(); if (/^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$/.test(existingId)) { localStorage.setItem('chatHistoryUserId', existingId); currentUserId = existingId; initializeApp(); } else { alert("Invalid User ID format."); } });
+    submitExistingUserIdBtn.addEventListener('click', () => { const id = existingUserIdInput.value.trim(); if (/^[a-fA-F0-9]{8}-([a-fA-F0-9]{4}-){3}[a-fA-F0-9]{12}$/.test(id)) { localStorage.setItem('chatHistoryUserId', id); currentUserId = id; initializeApp(); } else { alert("Invalid User ID format."); } });
 
     // --- E. Handler Functions ---
     const handleChatSubmit = async (e) => {
         e.preventDefault(); if (isSubmitting) return;
-        const promptText = promptInput.value.trim(); const isLargeFileSubmit = attachedLargeFiles.length > 0;
+        const promptText = promptInput.value.trim();
+        const isLargeFileSubmit = attachedLargeFiles.length > 0;
         if (!promptText && !screenStream && !attachedFile && !attachedUrl && !isLargeFileSubmit) return;
         if (!currentUserId) { showUserIdModal(); return; }
+
         isSubmitting = true;
-        let userMessageForDisplay = promptText;
-        if (isLargeFileSubmit) { const fileText = attachedLargeFiles.length > 1 ? `${attachedLargeFiles.length} large files` : attachedLargeFiles[0].name; userMessageForDisplay = promptText ? `${promptText} (context: ${fileText})` : `Question about ${fileText}`; }
-        else if (attachedFile) { userMessageForDisplay = promptText ? `${promptText} (File: ${attachedFile.name})` : `Question about ${attachedFile.name}`; }
-        const finalPrompt = promptText || (screenStream ? "What do you see?" : "Summarize the content.");
-        renderMessage("user", userMessageForDisplay); promptInput.value = ""; autoResizeTextarea();
+        let userDisplay = promptText;
+        if (isLargeFileSubmit) userDisplay += ` (${attachedLargeFiles.length > 1 ? `${attachedLargeFiles.length} files` : attachedLargeFiles[0].name})`;
+        if (attachedFile) userDisplay += ` (File: ${attachedFile.name})`;
+        if (attachedUrl) userDisplay += ` (URL: ${attachedUrl})`;
+        if (screenStream && !userDisplay) userDisplay = "Question about the screen capture";
+
+
+        renderMessage("user", userDisplay);
+        promptInput.value = "";
+        autoResizeTextarea();
+
         const botMessageElement = createBotMessageElement();
-        const formData = new FormData(); formData.append("prompt", finalPrompt); formData.append("chat_id", currentChatId || 'null');
-        if (isLargeFileSubmit) { formData.append('upload_type', 'large'); attachedLargeFiles.forEach(file => { formData.append('large_files[]', file); }); }
+        const formData = new FormData();
+        formData.append("prompt", promptText || (screenStream ? "Describe what you see on the screen." : "Analyze the attached content."));
+        formData.append("chat_id", currentChatId || 'null');
+
+        if (isLargeFileSubmit) { formData.append('upload_type', 'large'); attachedLargeFiles.forEach(file => formData.append('large_files[]', file)); }
         else if (attachedFile) { formData.append('file', attachedFile); }
-        else if (screenStream) { try { const blob = await captureScreenAsBlob(); const screenshotFile = new File([blob], "screenshot.png", { type: "image/png" }); formData.append("file", screenshotFile); } catch (error) { console.error("Failed to capture screen:", error); renderMessage('bot', `Error capturing screen: ${error.message}`); isSubmitting = false; return; } }
+        else if (screenStream) { try { const blob = await captureScreenAsBlob(); formData.append("file", new File([blob], "screenshot.png", { type: "image/png" })); } catch (err) { updateBotMessage(botMessageElement, `Error capturing screen: ${err.message}`, true); isSubmitting = false; return; } }
         else if (attachedUrl) { formData.append("website_url", attachedUrl); }
+        
         try {
             const response = await fetch('/api/chat', { method: 'POST', headers: { 'X-User-ID': currentUserId }, body: formData });
             if (!response.ok || !response.body) throw new Error(`Server error (${response.status})`);
-            const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
             while (true) {
                 const { value, done } = await reader.read(); if (done) break;
                 buffer += decoder.decode(value, { stream: true });
                 const parts = buffer.split('\n\n'); buffer = parts.pop();
-                for (const part of parts) { if (part.startsWith('data:')) { try { const eventData = JSON.parse(part.substring(5)); if (eventData.type === 'status') { updateBotMessage(botMessageElement, eventData.content, true); } else if (eventData.type === 'chunk') { updateBotMessage(botMessageElement, eventData.content, false); } else if (eventData.type === 'error') { throw new Error(eventData.content); } else if (eventData.type === 'new_chat_info') { currentChatId = eventData.chatId; await loadChatHistory(); document.querySelector(`#chat-history-list li[data-chat-id="${currentChatId}"]`).classList.add('active'); } } catch (e) { console.error("Error parsing SSE event:", e, "Data:", part); } } }
+                for (const part of parts) {
+                    if (part.startsWith('data:')) {
+                        try {
+                            const data = JSON.parse(part.substring(5));
+                            if (data.type === 'status') { updateBotMessage(botMessageElement, data.content, true); } 
+                            else if (data.type === 'chunk') { updateBotMessage(botMessageElement, data.content, false); } 
+                            else if (data.type === 'error') { throw new Error(data.content); } 
+                            else if (data.type === 'new_chat_info') {
+                                currentChatId = data.chatId;
+                                await loadChatHistory();
+                                document.querySelector(`li[data-chat-id="${currentChatId}"]`).classList.add('active');
+                            }
+                        } catch (e) {
+                            console.error("SSE parse error:", e, "Data:", part);
+                        }
+                    }
+                }
             }
             finalizeBotMessage(botMessageElement);
-        } catch (error) { console.error("Chat fetch error:", error); const errorMessage = `Sorry, an error occurred. (Error: ${error.message})`; updateBotMessage(botMessageElement, errorMessage, true); finalizeBotMessage(botMessageElement); }
-        finally { resetAttachments(true); isSubmitting = false; }
-    };
-
-    // ### THIS FUNCTION IS NOW FIXED ###
-    const resetAttachments = (fullReset = false) => {
-        if (screenStream) {
-            stopScreenSharing();
+        } catch (error) {
+            console.error("Chat fetch error:", error);
+            updateBotMessage(botMessageElement, `Sorry, an error occurred: ${error.message}`, true);
+        } finally {
+            resetAttachments();
+            isSubmitting = false;
         }
+    };
+    
+    // --- Attachment & Screen Share Helpers ---
+    const resetAttachments = () => {
+        stopScreenSharing();
         attachedFile = null;
         attachedUrl = null;
         attachedLargeFiles = [];
-        // The next two lines were the cause of the bug and have been removed.
-        // We should not clear the file input's value programmatically here.
-        if (fullReset) {
-            // We only reset the actual input elements on a fullReset, like after a submission.
-            fileInput.value = "";
-            largeFileInput.value = "";
-            attachmentPreview.style.display = 'none';
-            attachmentPreview.innerHTML = '';
-        }
+        attachmentPreview.style.display = 'none';
+        attachmentPreview.innerHTML = '';
     };
 
     const showAttachmentPreview = (name, typeOrIcon) => {
         attachmentPreview.style.display = 'flex';
         const iconClass = { 'desktop': 'fa-desktop', 'url': 'fa-link', 'file': 'fa-file-alt' }[typeOrIcon] || typeOrIcon;
-        const closeHandler = () => { if (typeOrIcon === 'desktop') stopScreenSharing(); resetAttachments(true); };
         attachmentPreview.innerHTML = `<i class="fas ${iconClass}"></i><span>${name}</span><button id="remove-attachment-btn" type="button">&times;</button>`;
-        document.getElementById('remove-attachment-btn').addEventListener('click', closeHandler);
+        document.getElementById('remove-attachment-btn').addEventListener('click', resetAttachments);
     };
-    const stopScreenSharing = () => { if (screenStream) { screenStream.getTracks().forEach(track => track.stop()); } screenStream = null; screenShareBtn.classList.remove("active"); if (attachmentPreview.innerHTML.includes('fa-desktop')) { resetAttachments(true); } };
-    const handleScreenShareClick = () => (screenStream ? stopScreenSharing() : startScreenSharing());
-    const captureScreenAsBlob = () => new Promise((resolve, reject) => { if (!screenStream || !screenStream.active) return reject(new Error('Screen sharing not active.')); const track = screenStream.getVideoTracks()[0]; new ImageCapture(track).grabFrame().then(imageBitmap => { const canvas = document.createElement('canvas'); canvas.width = imageBitmap.width; canvas.height = imageBitmap.height; canvas.getContext('2d').drawImage(imageBitmap, 0, 0); canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Canvas to Blob conversion failed.')), 'image/png'); }).catch(reject); });
+
+    const startScreenSharing = async () => {
+        if (!navigator.mediaDevices?.getDisplayMedia) { alert("Screen Sharing is not supported by your browser."); return; }
+        try {
+            const stream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: "always" }, audio: false });
+            resetAttachments();
+            screenStream = stream;
+            screenShareBtn.classList.add("active");
+            showAttachmentPreview("Screen is being shared", 'desktop');
+            stream.getVideoTracks()[0].addEventListener('ended', stopScreenSharing);
+        } catch (err) { console.error("Screen Sharing Error:", err); stopScreenSharing(); }
+    };
+    const stopScreenSharing = () => { if (screenStream) { screenStream.getTracks().forEach(track => track.stop()); } screenStream = null; screenShareBtn.classList.remove("active"); if(attachmentPreview.innerHTML.includes('fa-desktop')) { attachmentPreview.style.display='none'; attachmentPreview.innerHTML='';} };
+    const handleScreenShareClick = () => screenStream ? stopScreenSharing() : startScreenSharing();
+    const captureScreenAsBlob = () => new Promise((resolve, reject) => { if (!screenStream || !screenStream.active) return reject(new Error('Screen sharing not active.')); const track = screenStream.getVideoTracks()[0]; const imageCapture = new ImageCapture(track); imageCapture.grabFrame().then(img => { const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height; canvas.getContext('2d').drawImage(img, 0, 0); canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Canvas to Blob failed.')), 'image/png'); }).catch(reject); });
     const closeSidebar = () => { sidebar.classList.remove("show"); sidebarOverlay.classList.remove("active"); };
-    const handleMediaFormSubmit = async (e) => { e.preventDefault(); const type = document.getElementById("modal-type").value, prompt = document.getElementById("modal-prompt").value.trim(); if (!prompt) return; hideModal(); renderMessage('user', `Generate ${type}: "${prompt}"`); const botMessageElement = createBotMessageElement(); updateBotMessage(botMessageElement, `Working on it! Generating your ${type}...`, true); let url, body; if (type === 'image') { url = '/api/generate/image'; const num_images = parseInt(document.getElementById("modal-num-images").value, 10); body = JSON.stringify({ prompt, num_images }); } else { url = '/api/generate/video'; body = JSON.stringify({ prompt }); } try { const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body }); const result = await response.json(); if (!response.ok || !result.success) throw new Error(result.error || "An unknown error occurred."); let mediaHTML; if (type === 'image') { mediaHTML = 'Here are the generated images:<div class="generated-media-grid">'; result.paths.forEach(path => { mediaHTML += `<a href="${path}" target="_blank"><img src="${path}" alt="${prompt}"></a>`; }); mediaHTML += '</div>'; } else { mediaHTML = `Here is your video:<video controls src="${result.path}"></video>`; } botMessageElement.dataset.rawContent = mediaHTML; finalizeBotMessage(botMessageElement); } catch (error) { console.error(`Error generating ${type}:`, error); const errorMessage = `Sorry, I couldn't generate the ${type}. <br><strong>Error:</strong> ${error.message}`; updateBotMessage(botMessageElement, errorMessage, true); finalizeBotMessage(botMessageElement); } };
-    const showModal = (type) => { const modalTitle = generationModal.querySelector("#modal-title"), numImagesGroup = generationModal.querySelector("#modal-num-images-group"); modalForm.reset(); generationModal.querySelector("#modal-type").value = type; modalTitle.textContent = type === 'image' ? "Generate Image(s)" : "Generate Video"; numImagesGroup.style.display = type === 'image' ? 'block' : 'none'; generationModal.style.display = 'flex'; setTimeout(() => generationModal.classList.add('active'), 10); };
+
+    // --- Media Generation Modal Logic ---
+    const handleMediaFormSubmit = async (e) => { e.preventDefault(); const type = document.getElementById("modal-type").value; const prompt = document.getElementById("modal-prompt").value.trim(); if (!prompt) return; hideModal(); renderMessage('user', `Generate ${type}: "${prompt}"`); const botEl = createBotMessageElement(); updateBotMessage(botEl, `Working on generating your ${type}...`, true); const url = type === 'image' ? '/api/generate/image' : '/api/generate/video'; const body = JSON.stringify({ prompt, num_images: parseInt(document.getElementById("modal-num-images").value, 10) }); try { const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }); const result = await res.json(); if (!res.ok || !result.success) throw new Error(result.error || 'Unknown error'); let html; if (type === 'image') { html = 'Here are the images:<div class="generated-media-grid">' + result.paths.map(p => `<a href="${p}" target="_blank"><img src="${p}" alt="${prompt}"></a>`).join('') + '</div>'; } else { html = `Here is your video:<video controls src="${result.path}"></video>`; } botEl.dataset.rawContent = html; finalizeBotMessage(botEl); } catch (err) { updateBotMessage(botEl, `Failed to generate the ${type}. Error: ${err.message}`, true); } };
+    const showModal = (type) => { const title = generationModal.querySelector("#modal-title"), numGroup = generationModal.querySelector("#modal-num-images-group"); modalForm.reset(); generationModal.querySelector("#modal-type").value = type; title.textContent = `Generate ${type === 'image' ? 'Image(s)' : 'Video'}`; numGroup.style.display = type === 'image' ? 'block' : 'none'; generationModal.style.display = 'flex'; setTimeout(() => generationModal.classList.add('active'), 10); };
     const hideModal = () => { generationModal.classList.remove('active'); setTimeout(() => generationModal.style.display = 'none', 300); };
 
     // --- F. Start the app ---
