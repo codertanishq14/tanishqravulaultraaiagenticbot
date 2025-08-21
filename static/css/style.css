@@ -140,6 +140,10 @@ body {
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
+    /* --- FIX: Constrain width and center chat on desktop for readability --- */
+    max-width: 900px;
+    width: 100%;
+    margin: 0 auto;
 }
 .message-container::-webkit-scrollbar { width: 6px; }
 .message-container::-webkit-scrollbar-thumb { background: #444; border-radius: 6px; }
@@ -352,9 +356,25 @@ textarea#prompt-input::placeholder {
     .mobile-header { display: flex; align-items: center; gap: 1rem; }
     .sidebar { position: fixed; left: 0; top: 0; height: 100%; z-index: 1000; transform: translateX(-100%); box-shadow: 2px 0 10px rgba(0,0,0,0.2); }
     .sidebar.show { transform: translateX(0); }
-    .chat-window { width: 100%; height: 100vh; }
-    .message-container { padding: 1rem; }
-    .input-area { padding: 0.5rem 1rem; }
+
+    /* --- FIX: Use 100% height for mobile stability instead of 100vh --- */
+    .chat-window {
+        width: 100%;
+        height: 100%; /* Changed from 100vh */
+    }
+
+    /* --- FIX: Ensure message container uses full width on mobile --- */
+    .message-container {
+        padding: 1rem;
+        max-width: 100%;
+    }
+
+    /* --- FIX: Adjust input area padding for mobile and notched devices --- */
+    .input-area {
+        padding: 0.5rem 1rem;
+        padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+    }
+
     .message { max-width: 95%; }
     .welcome-screen h1 { font-size: 1.5rem; }
     .example-prompts { grid-template-columns: 1fr; }
