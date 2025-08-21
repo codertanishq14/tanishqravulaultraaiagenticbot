@@ -21,18 +21,31 @@
     padding: 0;
 }
 
+/* --- CORE FIX FOR MOBILE KEYBOARD ISSUE --- */
+/* By setting html and body height to 100%, we create a layout container
+   that correctly resizes when the mobile keyboard appears. */
+html, body {
+    height: 100%;
+}
+
 body {
     font-family: 'Inter', sans-serif;
     background-color: var(--bg-primary);
     background-image: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.05) 1px, transparent 0);
     background-size: 25px 25px;
     color: var(--text-primary);
+    /* This is important: it prevents the entire page from scrolling,
+       allowing only our message container to scroll. */
     overflow: hidden;
 }
 
 .chat-container {
     display: flex;
-    height: 100vh;
+    /* --- CORE FIX FOR MOBILE KEYBOARD ISSUE --- */
+    /* Changed from `height: 100vh` to `height: 100%`.
+       `100vh` does not account for the keyboard, pushing the input off-screen.
+       `100%` respects the actual visible space, keeping the input box in view. */
+    height: 100%;
 }
 
 /* --- Sidebar --- */
@@ -357,19 +370,19 @@ textarea#prompt-input::placeholder {
     .sidebar { position: fixed; left: 0; top: 0; height: 100%; z-index: 1000; transform: translateX(-100%); box-shadow: 2px 0 10px rgba(0,0,0,0.2); }
     .sidebar.show { transform: translateX(0); }
 
-    /* --- FIX: Use 100% height for mobile stability instead of 100vh --- */
+    /* The original "FIX" below was correct in spirit but didn't work because
+       the parent container was still using 100vh. Now that the parent is fixed,
+       this rule will work as intended. */
     .chat-window {
         width: 100%;
-        height: 100%; /* Changed from 100vh */
+        height: 100%;
     }
 
-    /* --- FIX: Ensure message container uses full width on mobile --- */
     .message-container {
         padding: 1rem;
         max-width: 100%;
     }
 
-    /* --- FIX: Adjust input area padding for mobile and notched devices --- */
     .input-area {
         padding: 0.5rem 1rem;
         padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
