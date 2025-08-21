@@ -1,0 +1,7 @@
+espeak
+libespeak-dev
+ffmpeg
+python3
+python3-pip
+libx264-dev
+espeak-ng

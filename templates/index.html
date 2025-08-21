@@ -1,0 +1,125 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Services Chat</title>
+    <!-- Using a dark theme for code highlighting that matches the new UI -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/tomorrow-night-blue.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <!-- Updated font to Poppins for a modern look -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="chat-container">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <button id="new-chat-btn" class="sidebar-button">
+                    <i class="fas fa-plus"></i> New Chat
+                </button>
+            </div>
+            <nav class="chat-history">
+                <ul id="chat-history-list">
+                    <!-- Chat history items will be dynamically inserted here -->
+                </ul>
+            </nav>
+            <div class="sidebar-footer">
+                <div id="user-id-manager"></div>
+                <span>Powered by Tanishq</span>
+            </div>
+        </aside>
+
+        <main class="chat-window">
+            <div class="mobile-header">
+                <button id="menu-toggle-btn" class="icon-button">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+
+            <div id="message-container" class="message-container">
+                <div class="message bot-message">
+                    <div class="message-content">
+                        <p>Welcome! I'm an advanced AI assistant. You can ask me to generate code, create tables, analyze files, or generate media. How can I help you today?</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="input-area">
+                <div id="attachment-preview" class="attachment-preview"></div>
+                <form id="chat-form" class="chat-form">
+                    <div class="input-wrapper">
+                        <textarea id="prompt-input" placeholder="Message your AI Assistant..." rows="1"></textarea>
+
+                        <button type="button" class="icon-button" id="file-attach-btn" title="Attach File"> <i class="fas fa-paperclip"></i> </button>
+                        <input type="file" id="file-input" style="display: none;">
+
+                        <button type="button" class="icon-button" id="screen-share-btn" title="Share Screen"> <i class="fas fa-desktop"></i> </button>
+                        <button type="button" class="icon-button" id="image-gen-btn" title="Generate Image"> <i class="fas fa-image"></i> </button>
+                        <button type="button" class="icon-button" id="video-gen-btn" title="Generate Video"> <i class="fas fa-video"></i> </button>
+                        <button type="button" class="icon-button" id="url-attach-btn" title="Attach URL"> <i class="fas fa-link"></i> </button>
+
+                        <button type="button" class="icon-button" id="large-file-attach-btn" title="Attach Very Large Files (PDF, Code, CSV, etc.)"> <i class="fas fa-file-zipper"></i> </button>
+                        <input type="file" id="large-file-input" style="display: none;" multiple>
+
+                        <button type="submit" class="icon-button send-btn" title="Send Message"> <i class="fas fa-paper-plane"></i> </button>
+                    </div>
+                </form>
+            </div>
+        </main>
+    </div>
+
+    <div id="sidebar-overlay"></div>
+
+    <!-- All Modals are unchanged but included for completeness -->
+    <div id="user-id-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h3>Welcome! Secure Your Chat History</h3>
+            <p style="margin-bottom: 1rem; line-height: 1.5;">To keep your chats private, we use a unique User ID. Please generate a new one and <strong>save it somewhere safe.</strong> You'll need it to access your history on other devices or if you clear your browser data.</p>
+            <div id="user-id-display-area" style="display:none;">
+                <label>Your New User ID (Save this!):</label>
+                <div class="user-id-copy-wrapper">
+                    <input type="text" id="new-user-id-display" readonly>
+                    <button id="copy-user-id-btn" title="Copy ID"><i class="fas fa-copy"></i></button>
+                </div>
+                <p class="warning-text"><strong>Important:</strong> Copy and save this ID now. You will not be shown it again.</p>
+                <button id="confirm-user-id-saved-btn" class="modal-submit-btn">I have saved my ID, Continue</button>
+            </div>
+            <div id="user-id-choice-area">
+                 <button id="generate-user-id-btn" class="modal-submit-btn">Generate New User ID</button>
+                 <button id="existing-user-id-btn" class="sidebar-button" style="width: 100%; margin-top: 10px; text-align: center; background: var(--bg-tertiary-dark); border: 1px solid var(--border-color)">I Already Have an ID</button>
+            </div>
+            <div id="user-id-input-area" style="display:none;">
+                 <label for="existing-user-id-input">Enter your User ID:</label>
+                 <input type="text" id="existing-user-id-input" placeholder="Paste your User ID here">
+                 <button id="submit-existing-user-id-btn" class="modal-submit-btn" style="margin-top: 10px;">Load My Chats</button>
+            </div>
+        </div>
+    </div>
+    <div id="generation-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="modal-close-btn">&times;</button>
+            <h3 id="modal-title">Generate Media</h3>
+            <form id="modal-form">
+                <div class="modal-form-group">
+                    <label for="modal-prompt">Description Prompt</label>
+                    <textarea id="modal-prompt" rows="3" placeholder="e.g., a photorealistic white siamese cat" required></textarea>
+                </div>
+                <div id="modal-num-images-group" class="modal-form-group">
+                    <label for="modal-num-images">Number of Images (1-4)</label>
+                    <input type="number" id="modal-num-images" value="1" min="1" max="4">
+                </div>
+                <input type="hidden" id="modal-type" value="">
+                <button type="submit" class="modal-submit-btn">Generate</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
