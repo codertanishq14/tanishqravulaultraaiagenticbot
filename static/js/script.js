@@ -1,4 +1,4 @@
-// static/js/script.js (Updated for User GUIDs & New UI)
+// static/js/script.js (Updated for Screensharing)
 
 document.addEventListener("DOMContentLoaded", () => {
     // --- DOM Elements ---
@@ -9,19 +9,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const promptInput = document.getElementById("prompt-input");
     const fileAttachBtn = document.getElementById("file-attach-btn");
     const urlAttachBtn = document.getElementById("url-attach-btn");
+    const screenshareAttachBtn = document.getElementById("screenshare-attach-btn"); // NEW
     const fileInput = document.getElementById("file-input");
     const attachmentPreview = document.getElementById("attachment-preview");
     const menuToggleBtn = document.getElementById("menu-toggle-btn");
     const sidebar = document.querySelector(".sidebar");
     const sidebarOverlay = document.getElementById("sidebar-overlay");
-    const welcomeScreen = document.getElementById("welcome-screen"); // NEW
+    const welcomeScreen = document.getElementById("welcome-screen");
 
     // --- State ---
     let currentChatId = null;
     let attachedFile = null;
     let attachedUrl = null;
 
-    // --- NEW: User GUID Management ---
+    // --- User GUID Management ---
     const getUserGuid = () => {
         let userGuid = localStorage.getItem('userGuid');
         if (!userGuid) {
@@ -32,7 +33,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
     const userGuid = getUserGuid();
 
-    // --- Mobile Sidebar Logic (no changes) ---
+    // --- Mobile Sidebar Logic ---
     const toggleSidebar = () => {
         sidebar.classList.toggle("show");
         sidebarOverlay.classList.toggle("active");
@@ -42,7 +43,7 @@ document.addEventListener("DOMContentLoaded", () => {
         sidebarOverlay.classList.remove("active");
     };
 
-    // --- Auto-resize Textarea (no changes) ---
+    // --- Auto-resize Textarea ---
     promptInput.addEventListener('input', () => {
         promptInput.style.height = 'auto';
         promptInput.style.height = (promptInput.scrollHeight) + 'px';
@@ -55,7 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     };
 
-    // --- Add Copy Buttons to Code Blocks (no changes) ---
+    // --- Add Copy Buttons to Code Blocks ---
     const addCopyButtons = (messageEl) => {
         const codeBlocks = messageEl.querySelectorAll('pre');
         codeBlocks.forEach(block => {
@@ -79,7 +80,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     };
 
-    // --- Chat & Message Rendering (no changes) ---
+    // --- Chat & Message Rendering ---
     const renderMessage = (role, content) => {
         const messageDiv = document.createElement("div");
         messageDiv.className = `message ${role}-message`;
@@ -116,10 +117,10 @@ document.addEventListener("DOMContentLoaded", () => {
         addCopyButtons(element);
     };
 
-    // --- Chat History Management (UPDATED with User GUID Header) ---
+    // --- Chat History Management ---
     const loadChatHistory = async () => {
         try {
-            chatHistoryList.innerHTML = '<li>Loading history...</li>'; // Loading state
+            chatHistoryList.innerHTML = '<li>Loading history...</li>';
             const response = await fetch('/api/history', {
                 headers: { 'X-User-GUID': userGuid }
             });
@@ -152,7 +153,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const conversation = await response.json();
             messageContainer.innerHTML = "";
-            showWelcomeScreen(false); // Hide welcome screen
+            showWelcomeScreen(false);
             conversation.messages.forEach(msg => {
                 const content = msg.parts.join("\n");
                 const role = msg.role === 'model' ? 'bot' : 'user';
@@ -178,7 +179,7 @@ document.addEventListener("DOMContentLoaded", () => {
     newChatBtn.addEventListener("click", () => {
         currentChatId = null;
         messageContainer.innerHTML = "";
-        showWelcomeScreen(true); // Show welcome screen
+        showWelcomeScreen(true);
         promptInput.value = "";
         document.querySelectorAll('#chat-history-list li').forEach(li => li.classList.remove('active'));
         resetAttachments();
@@ -190,8 +191,9 @@ document.addEventListener("DOMContentLoaded", () => {
         const promptText = promptInput.value.trim();
         if (!promptText) return;
 
-        if (messageContainer.contains(welcomeScreen)) {
-            showWelcomeScreen(false); // Hide welcome screen on first message
+        if (messageContainer.contains(welcomeScreen) || messageContainer.innerHTML.trim() === '') {
+            showWelcomeScreen(false);
+            messageContainer.innerHTML = '';
         }
 
         renderMessage("user", promptText);
@@ -209,7 +211,7 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const response = await fetch('/api/chat', {
                 method: 'POST',
-                headers: { 'X-User-GUID': userGuid }, // ADDED USER GUID
+                headers: { 'X-User-GUID': userGuid },
                 body: formData
             });
 
@@ -231,7 +233,7 @@ document.addEventListener("DOMContentLoaded", () => {
             finalizeStreamingMessage(botMessageElement);
 
             if (isNewChat) {
-                await loadChatHistory(); // Refresh history list
+                await loadChatHistory();
             }
 
         } catch (error) {
@@ -242,7 +244,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    // Attachment Logic (no changes)
+    // --- Attachment Logic (UPDATED) ---
     fileAttachBtn.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
@@ -257,11 +259,63 @@ document.addEventListener("DOMContentLoaded", () => {
             showAttachmentPreview(url, 'url');
         }
     });
+
+    // NEW: Screenshare logic for the seamless experience
+    screenshareAttachBtn.addEventListener('click', async () => {
+        if (!navigator.mediaDevices?.getDisplayMedia) {
+            alert("Your browser does not support screen sharing.");
+            return;
+        }
+        try {
+            // 1. Ask the user what they want to share (tab, window, etc.)
+            const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+
+            // 2. Grab the first video track from their selection
+            const track = stream.getVideoTracks()[0];
+
+            // 3. Use ImageCapture API to take a single, high-quality snapshot
+            const imageCapture = new ImageCapture(track);
+            const bitmap = await imageCapture.grabFrame();
+
+            // 4. Important: Stop the screen sharing immediately after capture
+            track.stop(); 
+
+            // 5. Draw the captured image onto a hidden canvas to convert it
+            const canvas = document.createElement('canvas');
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            canvas.getContext('2d').drawImage(bitmap, 0, 0);
+
+            // 6. Convert the canvas content to a PNG File object
+            canvas.toBlob(blob => {
+                const screenshotFile = new File([blob], 'screenshot.png', { type: 'image/png' });
+                attachedFile = screenshotFile;
+                attachedUrl = null;
+                showAttachmentPreview('Screen Capture.png', 'screenshot');
+            }, 'image/png');
+
+        } catch (err) {
+            console.error("Error during screen share:", err);
+            // This handles the case where the user clicks "Cancel" on the share dialog
+            if (err.name !== 'NotAllowedError') {
+                 alert("Could not start screen sharing.");
+            }
+        }
+    });
+
+    // UPDATED: More flexible attachment preview to show a desktop icon
     const showAttachmentPreview = (name, type) => {
         attachmentPreview.style.display = 'flex';
-        attachmentPreview.innerHTML = `<i class="fas fa-${type === 'file' ? 'file-alt' : 'link'}"></i><span>${name}</span><button id="remove-attachment-btn" type="button">&times;</button>`;
+        let iconClass = 'fa-file-alt'; // default for 'file'
+        if (type === 'url') {
+            iconClass = 'fa-link';
+        } else if (type === 'screenshot') {
+            iconClass = 'fa-desktop'; // Use desktop icon for screen captures
+        }
+        attachmentPreview.innerHTML = `<i class="fas ${iconClass}"></i><span>${name}</span><button id="remove-attachment-btn" type="button">&times;</button>`;
         document.getElementById('remove-attachment-btn').addEventListener('click', resetAttachments);
     };
+
     const resetAttachments = () => {
         attachedFile = null; attachedUrl = null; fileInput.value = "";
         attachmentPreview.style.display = 'none'; attachmentPreview.innerHTML = '';
