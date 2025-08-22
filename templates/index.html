@@ -1,4 +1,4 @@
-<!-- templates/index.html (Updated with Welcome Screen) -->
+<!-- templates/index.html (Updated with Screen Share and Refresh Logic) -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -40,27 +40,14 @@
             </div>
 
             <div id="message-container" class="message-container">
-                <!-- NEW: Welcome screen for new chats -->
                 <div id="welcome-screen" class="welcome-screen">
                     <div class="logo">TR</div>
                     <h1>How can I help you today?</h1>
                     <div class="example-prompts">
-                        <div class="prompt-card">
-                            <h4>Write a Python script</h4>
-                            <p>to scrape data from a website</p>
-                        </div>
-                        <div class="prompt-card">
-                            <h4>Explain quantum computing</h4>
-                            <p>in simple terms for a beginner</p>
-                        </div>
-                        <div class="prompt-card">
-                            <h4>Create a marketing plan</h4>
-                            <p>for a new tech startup</p>
-                        </div>
-                        <div class="prompt-card">
-                            <h4>Analyze this file</h4>
-                            <p>and give me a summary (attach a file)</p>
-                        </div>
+                        <div class="prompt-card"><h4>Write a Python script</h4><p>to scrape data from a website</p></div>
+                        <div class="prompt-card"><h4>Explain quantum computing</h4><p>in simple terms for a beginner</p></div>
+                        <div class="prompt-card"><h4>Create a marketing plan</h4><p>for a new tech startup</p></div>
+                        <div class="prompt-card"><h4>Analyze this file</h4><p>and give me a summary (attach a file)</p></div>
                     </div>
                 </div>
             </div>
@@ -71,16 +58,11 @@
                 <form id="chat-form" class="chat-form">
                     <div class="input-wrapper">
                         <textarea id="prompt-input" placeholder="Message your AI Assistant..." rows="1" required></textarea>
-                        <button type="button" class="icon-button" id="file-attach-btn" title="Attach File">
-                            <i class="fas fa-paperclip"></i>
-                        </button>
+                        <button type="button" class="icon-button" id="file-attach-btn" title="Attach File"><i class="fas fa-paperclip"></i></button>
                         <input type="file" id="file-input" style="display: none;">
-                        <button type="button" class="icon-button" id="url-attach-btn" title="Attach URL">
-                            <i class="fas fa-link"></i>
-                        </button>
-                        <button type="submit" class="icon-button send-btn" title="Send Message">
-                            <i class="fas fa-paper-plane"></i>
-                        </button>
+                        <button type="button" class="icon-button" id="url-attach-btn" title="Attach URL"><i class="fas fa-link"></i></button>
+                        <button type="button" class="icon-button" id="screenshare-attach-btn" title="Share Screen"><i class="fas fa-desktop"></i></button>
+                        <button type="submit" class="icon-button send-btn" title="Send Message"><i class="fas fa-paper-plane"></i></button>
                     </div>
                 </form>
             </div>
