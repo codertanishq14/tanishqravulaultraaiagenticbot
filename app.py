@@ -1,4 +1,4 @@
-# app.py (Fixed Mobile Tab Switching, Screen Off, and Response Generation Issues)
+# app.py (Mobile-Specific Fixes for Tab Switching and Screen Off)
 
 import os
 import json
@@ -10,6 +10,11 @@ from PIL import Image
 import utils
 import time
 import threading
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- INITIALIZATION ---
 load_dotenv()
@@ -74,7 +79,7 @@ def get_chat_history_list(user_guid):
                         "title": data.get("title", "Untitled Chat")
                     })
             except Exception as e:
-                print(f"Error loading chat title for user {user_guid} from {filename}: {e}")
+                logger.error(f"Error loading chat title for user {user_guid} from {filename}: {e}")
     return histories
 
 def load_chat_conversation(user_guid, chat_id):
@@ -117,6 +122,46 @@ def cleanup_inactive_sessions():
             # Also clean up any ongoing generations for this user
             if user in ongoing_generations:
                 ongoing_generations.pop(user, None)
+
+# --- MOBILE-SPECIFIC FIXES ---
+
+def is_mobile_request():
+    """Check if the request is from a mobile device"""
+    user_agent = request.headers.get('User-Agent', '').lower()
+    mobile_keywords = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'blackberry', 'windows phone']
+    return any(keyword in user_agent for keyword in mobile_keywords)
+
+def handle_mobile_interruption(user_guid, chat_id, prompt, model_input, is_vision):
+    """Handle mobile-specific interruptions by resuming generation"""
+    try:
+        # Load the conversation
+        conversation = load_chat_conversation(user_guid, chat_id) or {"title": "Chat", "messages": []}
+        
+        # Check if we already have a partial response
+        last_message = conversation["messages"][-1] if conversation["messages"] else None
+        if last_message and last_message.get("role") == "model" and last_message.get("parts"):
+            # We already have a response, no need to regenerate
+            return True, last_message["parts"][0]
+        
+        # Regenerate the response
+        model = vision_model if is_vision else text_model
+        gemini_history = [SYSTEM_INSTRUCTION, SYSTEM_RESPONSE] + [
+            msg for msg in conversation["messages"] if 'parts' in msg and msg['role'] != 'model'
+        ]
+        
+        chat_session = model.start_chat(history=gemini_history)
+        response = chat_session.send_message(model_input)
+        
+        if response and response.text:
+            # Save the response
+            conversation["messages"].append({"role": "model", "parts": [response.text]})
+            save_chat_conversation(user_guid, chat_id, conversation)
+            return True, response.text
+    
+    except Exception as e:
+        logger.error(f"Error handling mobile interruption: {e}")
+    
+    return False, "⚠️ Sorry, something went wrong while generating your response. Please try again."
 
 # --- FLASK ROUTES ---
 
@@ -207,7 +252,7 @@ def chat():
     user_message = {"role": "user", "parts": [prompt]}
     conversation["messages"].append(user_message)
 
-    # --- 4. STREAM RESPONSE FROM GEMINI (WITH ROBUST ERROR HANDLING) ---
+    # --- 4. STREAM RESPONSE FROM GEMINI (WITH MOBILE-SPECIFIC HANDLING) ---
     model = vision_model if is_vision_request else text_model
 
     def generate_and_stream():
@@ -232,67 +277,38 @@ def chat():
                     "chat_id": chat_id,
                     "prompt": prompt,
                     "model_input": model_input,
+                    "is_vision": is_vision_request,
                     "start_time": time.time()
                 }
 
-            def try_send_message(input_text, attempt=1):
-                """Try sending to Gemini, retry with improved prompt if empty."""
-                nonlocal full_response
-                got_valid_text = False
-
-                try:
-                    stream = chat_session.send_message(input_text, stream=True)
-                    for chunk in stream:
-                        # Check if client is still connected
+            # For mobile devices, use a different approach to handle interruptions
+            if is_mobile_request():
+                # For mobile, we'll generate the complete response first, then stream it
+                # This prevents interruptions from breaking the generation
+                response = chat_session.send_message(model_input)
+                if response and response.text:
+                    full_response = response.text
+                    # Stream the response in chunks to simulate real-time generation
+                    words = full_response.split()
+                    for i in range(0, len(words), 3):  # Send 3 words at a time
                         if not is_session_active(user_guid):
-                            return
-                            
-                        if hasattr(chunk, "text") and chunk.text:
-                            got_valid_text = True
-                            full_response += chunk.text
-                            yield chunk.text
-
-                    # Retry with improved prompt if Gemini returned nothing
-                    if not got_valid_text and attempt <= 3:  # Try up to 3 times
-                        if attempt == 1:
-                            retry_input = f"Please provide a helpful, safe, and complete response to this user request: {input_text}"
-                        elif attempt == 2:
-                            retry_input = f"I didn't receive a response. Please answer this query in detail: {input_text}"
-                        else:
-                            retry_input = f"Provide a comprehensive response to: {input_text}"
-                            
-                        yield from try_send_message(retry_input, attempt=attempt+1)
-
-                    # Final fallback
-                    if not got_valid_text and attempt > 3:
-                        safe_msg = "I'm here to help, but I couldn't provide details for that request. Please try rephrasing."
-                        full_response = safe_msg
-                        yield safe_msg
-                except Exception as e:
-                    if attempt <= 2:  # Retry on error
-                        yield from try_send_message(input_text, attempt=attempt+1)
-                    else:
-                        # If we're still having issues, try a fresh generation
-                        if attempt == 3:
-                            try:
-                                # Start a fresh chat session
-                                fresh_chat = model.start_chat(history=gemini_history[:-1])
-                                fresh_stream = fresh_chat.send_message(input_text, stream=True)
-                                for chunk in fresh_stream:
-                                    if hasattr(chunk, "text") and chunk.text:
-                                        got_valid_text = True
-                                        full_response += chunk.text
-                                        yield chunk.text
-                                
-                                if not got_valid_text:
-                                    raise Exception("Fresh generation also failed")
-                            except Exception as retry_error:
-                                raise e from retry_error  # Re-raise original error
-                        else:
-                            raise e
-
-            # Run first attempt
-            yield from try_send_message(model_input)
+                            break
+                        chunk = " ".join(words[i:i+3]) + " "
+                        yield chunk
+                        time.sleep(0.05)  # Small delay to simulate streaming
+                else:
+                    yield "⚠️ Sorry, I couldn't generate a response. Please try again."
+            else:
+                # For desktop, use regular streaming
+                stream = chat_session.send_message(model_input, stream=True)
+                for chunk in stream:
+                    # Check if client is still connected
+                    if not is_session_active(user_guid):
+                        break
+                        
+                    if hasattr(chunk, "text") and chunk.text:
+                        full_response += chunk.text
+                        yield chunk.text
 
             # Save response
             conversation["messages"].append({"role": "model", "parts": [full_response]})
@@ -304,16 +320,20 @@ def chat():
                     ongoing_generations.pop(user_guid, None)
 
         except Exception as e:
-            print(f"Error during generation: {e}")
-            error_message = "⚠️ Sorry, something went wrong while generating your response. Please try again."
+            logger.error(f"Error during generation: {e}")
             
-            # If we have a partial response, include it in the error message
-            if full_response:
-                error_message = f"⚠️ Response generation was interrupted. Partial response:\n\n{full_response}\n\nPlease try again for a complete response."
-            
-            yield error_message
-            conversation["messages"].append({"role": "model", "parts": [error_message]})
-            save_chat_conversation(user_guid, chat_id, conversation)
+            # For mobile devices, try to handle the interruption gracefully
+            if is_mobile_request():
+                success, result = handle_mobile_interruption(user_guid, chat_id, prompt, model_input, is_vision_request)
+                if success:
+                    yield result
+                else:
+                    yield result
+            else:
+                error_message = "⚠️ Sorry, something went wrong while generating your response. Please try again."
+                yield error_message
+                conversation["messages"].append({"role": "model", "parts": [error_message]})
+                save_chat_conversation(user_guid, chat_id, conversation)
             
             # Clean up ongoing generation tracking
             with session_lock:
@@ -322,87 +342,63 @@ def chat():
 
     response = Response(stream_with_context(generate_and_stream()), mimetype='text/plain')
     response.headers['X-Chat-Id'] = chat_id
+    response.headers['X-Is-Mobile'] = str(is_mobile_request()).lower()
     return response
 
-@app.route('/api/resume-generation', methods=['POST'])
-def resume_generation():
-    """Endpoint to resume interrupted generation"""
+@app.route('/api/mobile-resume', methods=['POST'])
+def mobile_resume():
+    """Special endpoint for mobile devices to resume interrupted generations"""
     user_guid = request.headers.get('X-User-GUID')
     if not user_guid:
         return jsonify({"error": "User GUID is required."}), 400
         
-    with session_lock:
-        if user_guid not in ongoing_generations:
-            return jsonify({"error": "No ongoing generation to resume"}), 404
-            
-        generation_info = ongoing_generations[user_guid]
-        chat_id = generation_info["chat_id"]
-        model_input = generation_info["model_input"]
-        
-        # Remove from ongoing generations
-        ongoing_generations.pop(user_guid, None)
+    chat_id = request.form.get('chat_id')
+    prompt = request.form.get('prompt')
     
-    # Load the conversation
+    if not chat_id or not prompt:
+        return jsonify({"error": "Chat ID and prompt are required."}), 400
+        
+    # Try to resume the generation
     conversation = load_chat_conversation(user_guid, chat_id) or {"title": "Chat", "messages": []}
     
-    # Continue generation
-    model = text_model  # Default to text model for resuming
+    # Check if we already have a response
+    if conversation.get("messages") and conversation["messages"][-1].get("role") == "model":
+        return jsonify({
+            "status": "completed", 
+            "response": conversation["messages"][-1]["parts"][0]
+        })
     
-    def resume_and_stream():
-        full_response = ""
-        try:
-            gemini_history = [SYSTEM_INSTRUCTION, SYSTEM_RESPONSE] + [
-                msg for msg in conversation["messages"] if 'parts' in msg
-            ]
-            chat_session = model.start_chat(history=gemini_history[:-1])
-            
-            # Track this resumed generation
-            with session_lock:
-                ongoing_generations[user_guid] = {
-                    "chat_id": chat_id,
-                    "prompt": generation_info["prompt"],
-                    "model_input": model_input,
-                    "start_time": time.time(),
-                    "resumed": True
-                }
-            
-            # Continue from where we left off
-            stream = chat_session.send_message(model_input, stream=True)
-            for chunk in stream:
-                if not is_session_active(user_guid):
-                    return
-                    
-                if hasattr(chunk, "text") and chunk.text:
-                    full_response += chunk.text
-                    yield chunk.text
-            
-            # Save the completed response
-            conversation["messages"].append({"role": "model", "parts": [full_response]})
+    # Try to generate a new response
+    try:
+        model = text_model  # Default to text model for resuming
+        gemini_history = [SYSTEM_INSTRUCTION, SYSTEM_RESPONSE] + [
+            msg for msg in conversation["messages"] if 'parts' in msg and msg['role'] != 'model'
+        ]
+        
+        chat_session = model.start_chat(history=gemini_history)
+        response = chat_session.send_message(prompt)
+        
+        if response and response.text:
+            # Save the response
+            conversation["messages"].append({"role": "model", "parts": [response.text]})
             save_chat_conversation(user_guid, chat_id, conversation)
             
-            # Clean up ongoing generation tracking
-            with session_lock:
-                if user_guid in ongoing_generations:
-                    ongoing_generations.pop(user_guid, None)
-                    
-        except Exception as e:
-            print(f"Error during resumed generation: {e}")
-            error_message = "⚠️ Sorry, something went wrong while resuming your response."
+            return jsonify({
+                "status": "completed", 
+                "response": response.text
+            })
+        else:
+            return jsonify({
+                "status": "error", 
+                "message": "Failed to generate response"
+            }), 500
             
-            # If we have a partial response, include it
-            if full_response:
-                error_message = f"⚠️ Resumed generation was interrupted. Partial response:\n\n{full_response}\n\nPlease try again for a complete response."
-            
-            yield error_message
-            conversation["messages"].append({"role": "model", "parts": [error_message]})
-            save_chat_conversation(user_guid, chat_id, conversation)
-            
-            # Clean up ongoing generation tracking
-            with session_lock:
-                if user_guid in ongoing_generations:
-                    ongoing_generations.pop(user_guid, None)
-    
-    return Response(stream_with_context(resume_and_stream()), mimetype='text/plain')
+    except Exception as e:
+        logger.error(f"Error in mobile resume: {e}")
+        return jsonify({
+            "status": "error", 
+            "message": "Internal server error"
+        }), 500
 
 # Clean up inactive sessions periodically
 @app.before_request
