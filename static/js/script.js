@@ -1,4 +1,4 @@
-// static/js/script.js (Updated with Session Management)
+// static/js/script.js (Updated with Screen Off Detection)
 
 document.addEventListener("DOMContentLoaded", () => {
     // --- DOM Elements ---
@@ -21,7 +21,8 @@ document.addEventListener("DOMContentLoaded", () => {
     let currentChatId = null;
     let attachedFile = null;
     let attachedUrl = null;
-    let activeRequest = null; // Track active request
+    let activeRequest = null;
+    let screenOffTime = null;
 
     // --- User GUID Management ---
     const getUserGuid = () => {
@@ -40,6 +41,11 @@ document.addEventListener("DOMContentLoaded", () => {
     // Update activity timestamp on user interaction
     const updateActivity = () => {
         lastActivityTime = Date.now();
+        // Send heartbeat to keep session alive
+        fetch('/api/keepalive', {
+            method: 'POST',
+            headers: { 'X-User-GUID': userGuid }
+        }).catch(() => {}); // Silently fail if server not responding
     };
     
     // Track user activity
@@ -47,6 +53,30 @@ document.addEventListener("DOMContentLoaded", () => {
     document.addEventListener('keypress', updateActivity);
     document.addEventListener('scroll', updateActivity);
     document.addEventListener('touchstart', updateActivity);
+
+    // --- Screen State Detection ---
+    const handleScreenStateChange = () => {
+        if (document.visibilityState === 'hidden') {
+            // Screen is off or app is in background
+            screenOffTime = Date.now();
+        } else if (document.visibilityState === 'visible') {
+            // Screen is back on or app is in foreground
+            if (screenOffTime && (Date.now() - screenOffTime) > 30000) {
+                // If screen was off for more than 30 seconds, update activity
+                updateActivity();
+            }
+            screenOffTime = null;
+        }
+    };
+    
+    // Listen for visibility changes (screen on/off)
+    document.addEventListener('visibilitychange', handleScreenStateChange);
+    
+    // Also listen for page focus/blur events as additional triggers
+    window.addEventListener('focus', updateActivity);
+    window.addEventListener('blur', () => {
+        screenOffTime = Date.now();
+    });
 
     // --- Mobile Sidebar Logic ---
     const toggleSidebar = () => {
@@ -342,23 +372,19 @@ document.addEventListener("DOMContentLoaded", () => {
         attachmentPreview.style.display = 'none'; attachmentPreview.innerHTML = '';
     };
 
-    // Page Visibility API to handle tab switching
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') {
-            // Page is visible again, update activity
-            updateActivity();
-        }
-    });
+    // Send periodic heartbeats to keep session alive (every 5 minutes)
+    setInterval(updateActivity, 300000);
 
-    // Check for session expiration every minute
+    // Check for session expiration every 30 minutes (now 24 hours)
     setInterval(() => {
-        if (Date.now() - lastActivityTime > 300000) { // 5 minutes
-            if (confirm('Your session has expired due to inactivity. Would you like to refresh the page?')) {
+        if (Date.now() - lastActivityTime > 86400000) { // 24 hours
+            if (confirm('Your session has expired due to long inactivity. Would you like to refresh the page?')) {
                 window.location.reload();
             }
         }
-    }, 60000);
+    }, 1800000); // Check every 30 minutes
 
     // --- Initial Load ---
     loadChatHistory();
+    updateActivity(); // Initial activity update
 });
