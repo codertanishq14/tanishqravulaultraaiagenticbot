@@ -1,4 +1,4 @@
-// static/js/script.js (Updated with Screen Off Detection)
+// static/js/script.js (Updated for Mobile Tab Switching and Screen Off)
 
 document.addEventListener("DOMContentLoaded", () => {
     // --- DOM Elements ---
@@ -23,6 +23,8 @@ document.addEventListener("DOMContentLoaded", () => {
     let attachedUrl = null;
     let activeRequest = null;
     let screenOffTime = null;
+    let isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    let lastGenerationInfo = null;
 
     // --- User GUID Management ---
     const getUserGuid = () => {
@@ -61,9 +63,16 @@ document.addEventListener("DOMContentLoaded", () => {
             screenOffTime = Date.now();
         } else if (document.visibilityState === 'visible') {
             // Screen is back on or app is in foreground
-            if (screenOffTime && (Date.now() - screenOffTime) > 30000) {
-                // If screen was off for more than 30 seconds, update activity
+            if (screenOffTime && (Date.now() - screenOffTime) > 1000) {
+                // If screen was off for more than 1 second, update activity
                 updateActivity();
+                
+                // If we were in the middle of a generation, try to resume
+                if (lastGenerationInfo && isMobileDevice) {
+                    setTimeout(() => {
+                        checkAndResumeGeneration();
+                    }, 500);
+                }
             }
             screenOffTime = null;
         }
@@ -73,10 +82,69 @@ document.addEventListener("DOMContentLoaded", () => {
     document.addEventListener('visibilitychange', handleScreenStateChange);
     
     // Also listen for page focus/blur events as additional triggers
-    window.addEventListener('focus', updateActivity);
+    window.addEventListener('focus', () => {
+        updateActivity();
+        // If we were in the middle of a generation, try to resume
+        if (lastGenerationInfo && isMobileDevice) {
+            setTimeout(() => {
+                checkAndResumeGeneration();
+            }, 500);
+        }
+    });
+    
     window.addEventListener('blur', () => {
         screenOffTime = Date.now();
     });
+
+    // --- Mobile-Specific Functions ---
+    const checkAndResumeGeneration = () => {
+        if (!lastGenerationInfo || !isMobileDevice) return;
+        
+        // Check if the last message was an error message
+        const messages = messageContainer.querySelectorAll('.bot-message');
+        if (messages.length === 0) return;
+        
+        const lastMessage = messages[messages.length - 1];
+        const messageContent = lastMessage.querySelector('.message-content');
+        
+        if (messageContent && messageContent.textContent.includes('something went wrong')) {
+            // Try to resume the generation
+            resumeMobileGeneration();
+        }
+    };
+    
+    const resumeMobileGeneration = async () => {
+        if (!lastGenerationInfo) return;
+        
+        try {
+            const formData = new FormData();
+            formData.append("chat_id", lastGenerationInfo.chatId);
+            formData.append("prompt", lastGenerationInfo.prompt);
+            
+            const response = await fetch('/api/mobile-resume', {
+                method: 'POST',
+                headers: { 'X-User-GUID': userGuid },
+                body: formData
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === "completed" && result.response) {
+                // Replace the error message with the completed response
+                const messages = messageContainer.querySelectorAll('.bot-message');
+                if (messages.length > 0) {
+                    const lastMessage = messages[messages.length - 1];
+                    const messageContent = lastMessage.querySelector('.message-content');
+                    if (messageContent) {
+                        messageContent.innerHTML = marked.parse(result.response);
+                        finalizeStreamingMessage(messageContent);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error("Error resuming mobile generation:", error);
+        }
+    };
 
     // --- Mobile Sidebar Logic ---
     const toggleSidebar = () => {
@@ -235,6 +303,7 @@ document.addEventListener("DOMContentLoaded", () => {
         document.querySelectorAll('#chat-history-list li').forEach(li => li.classList.remove('active'));
         resetAttachments();
         closeSidebar();
+        lastGenerationInfo = null;
     });
 
     chatForm.addEventListener("submit", async (e) => {
@@ -259,6 +328,13 @@ document.addEventListener("DOMContentLoaded", () => {
         if (attachedFile) formData.append("file", attachedFile);
         if (attachedUrl) formData.append("website_url", attachedUrl);
 
+        // Store generation info for potential resume
+        lastGenerationInfo = {
+            chatId: currentChatId,
+            prompt: promptText,
+            timestamp: Date.now()
+        };
+
         try {
             // Create abort controller for this request
             const controller = new AbortController();
@@ -272,8 +348,14 @@ document.addEventListener("DOMContentLoaded", () => {
             });
 
             const newChatId = response.headers.get('X-Chat-Id');
+            const isMobile = response.headers.get('X-Is-Mobile') === 'true';
             const isNewChat = newChatId && newChatId !== currentChatId;
             if (isNewChat) currentChatId = newChatId;
+
+            // Update generation info with new chat ID if needed
+            if (isNewChat) {
+                lastGenerationInfo.chatId = newChatId;
+            }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -292,6 +374,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 await loadChatHistory();
             }
 
+            // Clear generation info after successful completion
+            lastGenerationInfo = null;
+
         } catch (error) {
             if (error.name === 'AbortError') {
                 console.log('Request was aborted');
@@ -299,6 +384,13 @@ document.addEventListener("DOMContentLoaded", () => {
             } else {
                 console.error("Error during chat:", error);
                 botMessageElement.innerHTML = "Sorry, something went wrong. Please try again.";
+                
+                // On mobile, we'll try to auto-resume after a delay
+                if (isMobileDevice) {
+                    setTimeout(() => {
+                        checkAndResumeGeneration();
+                    }, 2000);
+                }
             }
         } finally {
             activeRequest = null;
