@@ -398,3 +398,31 @@ textarea#prompt-input::placeholder {
     border-radius: 8px;
     margin: 1rem 0;
 }
+/* Add to the end of style.css */
+
+/* Keepalive indicator (hidden) */
+.keepalive-indicator {
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: #00ff00;
+    opacity: 0.5;
+    z-index: 1000;
+    display: none;
+}
+
+/* Session status message */
+.session-status {
+    position: fixed;
+    bottom: 10px;
+    left: 10px;
+    padding: 5px 10px;
+    background-color: rgba(0, 0, 0, 0.7);
+    color: white;
+    border-radius: 4px;
+    font-size: 12px;
+    z-index: 1000;
+}
