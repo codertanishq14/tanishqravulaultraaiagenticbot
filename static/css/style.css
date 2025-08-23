@@ -387,3 +387,14 @@ textarea#prompt-input::placeholder {
     .welcome-screen h1 { font-size: 1.5rem; }
     .example-prompts { grid-template-columns: 1fr; }
 }
+/* static/css/style.css (Minor Adjustment for Session Messages) */
+
+/* Add this to the existing CSS file */
+.session-expired-message {
+    background-color: #ff6b6b !important;
+    color: white !important;
+    text-align: center;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 1rem 0;
+}
