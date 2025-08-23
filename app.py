@@ -1,4 +1,4 @@
-# app.py (Fixed Inactivity and Tab Switching Issues)
+# app.py (Fixed Inactivity, Response Generation, and Screen Off Issues)
 
 import os
 import json
@@ -42,7 +42,7 @@ SYSTEM_RESPONSE = {
     "parts": ["Okay, I understand. I will format all my responses in Markdown, using tables for data and fenced code blocks for code snippets."]
 }
 
-# Session management
+# Session management - now with much longer expiration
 active_sessions = {}
 
 # --- USER-SPECIFIC CHAT HISTORY MANAGEMENT ---
@@ -110,6 +110,29 @@ def get_history_by_id(chat_id):
         return jsonify(conversation)
     return jsonify({"error": "Chat not found"}), 404
 
+@app.route('/api/keepalive', methods=['POST'])
+def keepalive():
+    """Endpoint to keep session alive with periodic heartbeats"""
+    user_guid = request.headers.get('X-User-GUID')
+    if user_guid:
+        # Check if this is a screen-on event (special header)
+        screen_off_duration = request.headers.get('X-Screen-Off-Duration')
+        if screen_off_duration:
+            try:
+                # If screen was off for a while, extend session more generously
+                off_duration = int(screen_off_duration)
+                if off_duration > 300:  # If screen was off for more than 5 minutes
+                    # Add extra time to account for the screen-off period
+                    active_sessions[user_guid] = time.time() + min(off_duration, 3600)  # Max 1 hour extra
+                    return jsonify({"status": "extended", "extra_seconds": min(off_duration, 3600)})
+            except ValueError:
+                pass
+                
+        # Normal heartbeat
+        active_sessions[user_guid] = time.time()
+        return jsonify({"status": "ok"})
+    return jsonify({"error": "User GUID is required."}), 400
+
 @app.route('/api/chat', methods=['POST'])
 def chat():
     # --- 1. GET USER GUID AND PARSE DATA ---
@@ -126,7 +149,7 @@ def chat():
     if not prompt:
         return jsonify({"error": "Prompt is required."}), 400
 
-    # Update session activity
+    # Update session activity - now with much longer expiration
     active_sessions[user_guid] = time.time()
 
     # --- 2. PREPARE MODEL INPUT ---
@@ -173,9 +196,9 @@ def chat():
     def generate_and_stream():
         full_response = ""
         try:
-            # Check if session is still active
-            if user_guid not in active_sessions or time.time() - active_sessions[user_guid] > 300:  # 5 minute timeout
-                error_message = "⚠️ Session expired due to inactivity. Please refresh the page."
+            # Check if session is still active - now with 24-hour timeout
+            if user_guid not in active_sessions or time.time() - active_sessions[user_guid] > 86400:  # 24 hour timeout
+                error_message = "⚠️ Session expired due to long inactivity. Please refresh the page."
                 yield error_message
                 conversation["messages"].append({"role": "model", "parts": [error_message]})
                 save_chat_conversation(user_guid, chat_id, conversation)
@@ -187,7 +210,7 @@ def chat():
             chat_session = model.start_chat(history=gemini_history[:-1])
 
             def try_send_message(input_text, attempt=1):
-                """Try sending to Gemini, retry once if empty."""
+                """Try sending to Gemini, retry with improved prompt if empty."""
                 nonlocal full_response
                 got_valid_text = False
 
@@ -203,20 +226,25 @@ def chat():
                             full_response += chunk.text
                             yield chunk.text
 
-                    # Retry once if Gemini returned nothing
-                    if not got_valid_text and attempt == 1:
-                        retry_input = f"Please provide a helpful, safe, and complete response to this user request: {input_text}"
-                        yield from try_send_message(retry_input, attempt=2)
+                    # Retry with improved prompt if Gemini returned nothing
+                    if not got_valid_text and attempt <= 3:  # Try up to 3 times
+                        if attempt == 1:
+                            retry_input = f"Please provide a helpful, safe, and complete response to this user request: {input_text}"
+                        elif attempt == 2:
+                            retry_input = f"I didn't receive a response. Please answer this query in detail: {input_text}"
+                        else:
+                            retry_input = f"Provide a comprehensive response to: {input_text}"
+                            
+                        yield from try_send_message(retry_input, attempt=attempt+1)
 
                     # Final fallback
-                    if not got_valid_text and attempt == 2:
+                    if not got_valid_text and attempt > 3:
                         safe_msg = "I'm here to help, but I couldn't provide details for that request. Please try rephrasing."
                         full_response = safe_msg
                         yield safe_msg
                 except Exception as e:
-                    if attempt == 1:
-                        # Try one more time on error
-                        yield from try_send_message(input_text, attempt=2)
+                    if attempt <= 2:  # Retry on error
+                        yield from try_send_message(input_text, attempt=attempt+1)
                     else:
                         raise e
 
@@ -238,12 +266,12 @@ def chat():
     response.headers['X-Chat-Id'] = chat_id
     return response
 
-# Clean up inactive sessions periodically
+# Clean up inactive sessions periodically - now with 24-hour expiration
 @app.before_request
 def cleanup_sessions():
     current_time = time.time()
     inactive_users = [user for user, last_active in active_sessions.items() 
-                     if current_time - last_active > 3600]  # 1 hour
+                     if current_time - last_active > 86400]  # 24 hours
     for user in inactive_users:
         active_sessions.pop(user, None)
 
