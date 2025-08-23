@@ -1,4 +1,4 @@
-/* static/css/style.css (Completely Revamped UI) */
+/* static/css/style.css (Completely Revamped UI with Fixes) */
 
 :root {
     --bg-primary: #1e1e24;       /* Dark background */
@@ -22,8 +22,6 @@
 }
 
 /* --- CORE FIX FOR MOBILE KEYBOARD ISSUE --- */
-/* By setting html and body height to 100%, we create a layout container
-   that correctly resizes when the mobile keyboard appears. */
 html, body {
     height: 100%;
 }
@@ -34,17 +32,11 @@ body {
     background-image: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.05) 1px, transparent 0);
     background-size: 25px 25px;
     color: var(--text-primary);
-    /* This is important: it prevents the entire page from scrolling,
-       allowing only our message container to scroll. */
     overflow: hidden;
 }
 
 .chat-container {
     display: flex;
-    /* --- CORE FIX FOR MOBILE KEYBOARD ISSUE --- */
-    /* Changed from `height: 100vh` to `height: 100%`.
-       `100vh` does not account for the keyboard, pushing the input off-screen.
-       `100%` respects the actual visible space, keeping the input box in view. */
     height: 100%;
 }
 
@@ -153,8 +145,9 @@ body {
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
-    /* --- FIX: Constrain width and center chat on desktop for readability --- */
-    max-width: 900px;
+    /* <<< START OF CHANGE: Increased width for better viewing on larger screens >>> */
+    max-width: 1280px; /* Changed from 900px */
+    /* <<< END OF CHANGE >>> */
     width: 100%;
     margin: 0 auto;
 }
@@ -354,6 +347,9 @@ textarea#prompt-input::placeholder {
 }
 .bot-message th, .bot-message td {
     padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid var(--border-color);
+    /* <<< START OF CHANGE: Prevents text from wrapping vertically in table cells >>> */
+    white-space: nowrap;
+    /* <<< END OF CHANGE >>> */
 }
 .bot-message th { background-color: #2a2a32; font-weight: 500; }
 .bot-message tr:last-child td { border-bottom: none; }
@@ -370,16 +366,15 @@ textarea#prompt-input::placeholder {
     .sidebar { position: fixed; left: 0; top: 0; height: 100%; z-index: 1000; transform: translateX(-100%); box-shadow: 2px 0 10px rgba(0,0,0,0.2); }
     .sidebar.show { transform: translateX(0); }
 
-    /* The original "FIX" below was correct in spirit but didn't work because
-       the parent container was still using 100vh. Now that the parent is fixed,
-       this rule will work as intended. */
     .chat-window {
         width: 100%;
         height: 100%;
     }
 
     .message-container {
-        padding: 1rem;
+        /* <<< START OF CHANGE: Reduced padding on mobile to increase content width >>> */
+        padding: 0.75rem;
+        /* <<< END OF CHANGE >>> */
         max-width: 100%;
     }
 
