@@ -1,4 +1,4 @@
-# app.py (Mobile-Specific Fixes for Tab Switching and Screen Off)
+# app.py (Enhanced with 20-Retry Logic for Complete Responses)
 
 import os
 import json
@@ -123,45 +123,82 @@ def cleanup_inactive_sessions():
             if user in ongoing_generations:
                 ongoing_generations.pop(user, None)
 
-# --- MOBILE-SPECIFIC FIXES ---
+# --- ENHANCED RETRY LOGIC ---
 
-def is_mobile_request():
-    """Check if the request is from a mobile device"""
-    user_agent = request.headers.get('User-Agent', '').lower()
-    mobile_keywords = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'blackberry', 'windows phone']
-    return any(keyword in user_agent for keyword in mobile_keywords)
+def generate_with_retries(model, prompt, max_retries=20):
+    """
+    Generate a response with extensive retry logic to ensure complete responses
+    """
+    full_response = ""
+    retry_count = 0
+    last_error = None
+    
+    while retry_count < max_retries:
+        try:
+            # Try to generate a response
+            response = model.generate_content(prompt)
+            
+            if response and response.text:
+                full_response = response.text
+                
+                # Check if the response seems complete
+                if is_response_complete(full_response):
+                    return full_response, True
+                else:
+                    # Response seems incomplete, try again with a different approach
+                    retry_count += 1
+                    logger.info(f"Response incomplete, retry {retry_count}/{max_retries}")
+                    
+                    # Vary the prompt slightly to get a better response
+                    if retry_count % 3 == 0:
+                        prompt = f"Please provide a more detailed and complete response to: {prompt}"
+                    elif retry_count % 3 == 1:
+                        prompt = f"Expand on your previous answer with more details: {prompt}"
+                    else:
+                        prompt = f"Provide a comprehensive response covering all aspects of: {prompt}"
+                    
+                    # Add a small delay between retries
+                    time.sleep(0.5)
+            else:
+                retry_count += 1
+                logger.info(f"Empty response, retry {retry_count}/{max_retries}")
+                
+        except Exception as e:
+            retry_count += 1
+            last_error = str(e)
+            logger.error(f"Error in generation (retry {retry_count}/{max_retries}): {e}")
+            
+            # Add a delay that increases with each retry
+            time.sleep(min(2, 0.5 * retry_count))
+    
+    # If we've exhausted all retries, return whatever we have or an error message
+    if full_response:
+        return full_response + "\n\n⚠️ Note: Response may be incomplete due to generation issues.", False
+    else:
+        error_msg = "⚠️ Sorry, I couldn't generate a complete response after multiple attempts."
+        if last_error:
+            error_msg += f" Error: {last_error}"
+        return error_msg, False
 
-def handle_mobile_interruption(user_guid, chat_id, prompt, model_input, is_vision):
-    """Handle mobile-specific interruptions by resuming generation"""
-    try:
-        # Load the conversation
-        conversation = load_chat_conversation(user_guid, chat_id) or {"title": "Chat", "messages": []}
+def is_response_complete(response):
+    """
+    Heuristic check to determine if a response seems complete
+    """
+    # Check if the response ends with proper punctuation (not mid-sentence)
+    if response and response.strip():
+        last_char = response.strip()[-1]
+        if last_char in ['.', '!', '?', ';', ':']:
+            return True
         
-        # Check if we already have a partial response
-        last_message = conversation["messages"][-1] if conversation["messages"] else None
-        if last_message and last_message.get("role") == "model" and last_message.get("parts"):
-            # We already have a response, no need to regenerate
-            return True, last_message["parts"][0]
-        
-        # Regenerate the response
-        model = vision_model if is_vision else text_model
-        gemini_history = [SYSTEM_INSTRUCTION, SYSTEM_RESPONSE] + [
-            msg for msg in conversation["messages"] if 'parts' in msg and msg['role'] != 'model'
-        ]
-        
-        chat_session = model.start_chat(history=gemini_history)
-        response = chat_session.send_message(model_input)
-        
-        if response and response.text:
-            # Save the response
-            conversation["messages"].append({"role": "model", "parts": [response.text]})
-            save_chat_conversation(user_guid, chat_id, conversation)
-            return True, response.text
-    
-    except Exception as e:
-        logger.error(f"Error handling mobile interruption: {e}")
-    
-    return False, "⚠️ Sorry, something went wrong while generating your response. Please try again."
+        # Check if it ends with a code block or list item
+        if response.strip().endswith('```') or response.strip().endswith('-') or response.strip().endswith('*'):
+            return True
+            
+        # Check if it's a very short response (might be complete)
+        if len(response.split()) < 10:
+            return True
+            
+    return False
 
 # --- FLASK ROUTES ---
 
@@ -252,7 +289,7 @@ def chat():
     user_message = {"role": "user", "parts": [prompt]}
     conversation["messages"].append(user_message)
 
-    # --- 4. STREAM RESPONSE FROM GEMINI (WITH MOBILE-SPECIFIC HANDLING) ---
+    # --- 4. GENERATE RESPONSE WITH EXTENSIVE RETRY LOGIC ---
     model = vision_model if is_vision_request else text_model
 
     def generate_and_stream():
@@ -266,11 +303,6 @@ def chat():
                 save_chat_conversation(user_guid, chat_id, conversation)
                 return
 
-            gemini_history = [SYSTEM_INSTRUCTION, SYSTEM_RESPONSE] + [
-                msg for msg in conversation["messages"] if 'parts' in msg
-            ]
-            chat_session = model.start_chat(history=gemini_history[:-1])
-
             # Track this generation
             with session_lock:
                 ongoing_generations[user_guid] = {
@@ -281,34 +313,21 @@ def chat():
                     "start_time": time.time()
                 }
 
-            # For mobile devices, use a different approach to handle interruptions
-            if is_mobile_request():
-                # For mobile, we'll generate the complete response first, then stream it
-                # This prevents interruptions from breaking the generation
-                response = chat_session.send_message(model_input)
-                if response and response.text:
-                    full_response = response.text
-                    # Stream the response in chunks to simulate real-time generation
-                    words = full_response.split()
-                    for i in range(0, len(words), 3):  # Send 3 words at a time
-                        if not is_session_active(user_guid):
-                            break
-                        chunk = " ".join(words[i:i+3]) + " "
-                        yield chunk
-                        time.sleep(0.05)  # Small delay to simulate streaming
-                else:
-                    yield "⚠️ Sorry, I couldn't generate a response. Please try again."
-            else:
-                # For desktop, use regular streaming
-                stream = chat_session.send_message(model_input, stream=True)
-                for chunk in stream:
-                    # Check if client is still connected
-                    if not is_session_active(user_guid):
-                        break
-                        
-                    if hasattr(chunk, "text") and chunk.text:
-                        full_response += chunk.text
-                        yield chunk.text
+            # For mobile devices or when we need to ensure complete responses,
+            # use our enhanced retry logic instead of streaming
+            response_text, success = generate_with_retries(model, model_input)
+            
+            # Stream the response in chunks to simulate real-time generation
+            words = response_text.split()
+            chunk_size = max(1, len(words) // 20)  # Split into approximately 20 chunks
+            
+            for i in range(0, len(words), chunk_size):
+                if not is_session_active(user_guid):
+                    break
+                chunk = " ".join(words[i:i+chunk_size]) + " "
+                full_response += chunk
+                yield chunk
+                time.sleep(0.05)  # Small delay to simulate streaming
 
             # Save response
             conversation["messages"].append({"role": "model", "parts": [full_response]})
@@ -322,14 +341,17 @@ def chat():
         except Exception as e:
             logger.error(f"Error during generation: {e}")
             
-            # For mobile devices, try to handle the interruption gracefully
-            if is_mobile_request():
-                success, result = handle_mobile_interruption(user_guid, chat_id, prompt, model_input, is_vision_request)
-                if success:
-                    yield result
-                else:
-                    yield result
-            else:
+            # Try one final time with a fresh generation
+            try:
+                response_text, success = generate_with_retries(model, model_input, max_retries=5)
+                yield response_text
+                
+                # Save the final response
+                conversation["messages"].append({"role": "model", "parts": [response_text]})
+                save_chat_conversation(user_guid, chat_id, conversation)
+                
+            except Exception as final_error:
+                logger.error(f"Final generation attempt also failed: {final_error}")
                 error_message = "⚠️ Sorry, something went wrong while generating your response. Please try again."
                 yield error_message
                 conversation["messages"].append({"role": "model", "parts": [error_message]})
@@ -342,7 +364,6 @@ def chat():
 
     response = Response(stream_with_context(generate_and_stream()), mimetype='text/plain')
     response.headers['X-Chat-Id'] = chat_id
-    response.headers['X-Is-Mobile'] = str(is_mobile_request()).lower()
     return response
 
 @app.route('/api/mobile-resume', methods=['POST'])
@@ -368,30 +389,21 @@ def mobile_resume():
             "response": conversation["messages"][-1]["parts"][0]
         })
     
-    # Try to generate a new response
+    # Try to generate a new response with enhanced retry logic
     try:
         model = text_model  # Default to text model for resuming
-        gemini_history = [SYSTEM_INSTRUCTION, SYSTEM_RESPONSE] + [
-            msg for msg in conversation["messages"] if 'parts' in msg and msg['role'] != 'model'
-        ]
         
-        chat_session = model.start_chat(history=gemini_history)
-        response = chat_session.send_message(prompt)
+        # Use our enhanced retry logic to ensure a complete response
+        response_text, success = generate_with_retries(model, prompt, max_retries=20)
         
-        if response and response.text:
-            # Save the response
-            conversation["messages"].append({"role": "model", "parts": [response.text]})
-            save_chat_conversation(user_guid, chat_id, conversation)
-            
-            return jsonify({
-                "status": "completed", 
-                "response": response.text
-            })
-        else:
-            return jsonify({
-                "status": "error", 
-                "message": "Failed to generate response"
-            }), 500
+        # Save the response
+        conversation["messages"].append({"role": "model", "parts": [response_text]})
+        save_chat_conversation(user_guid, chat_id, conversation)
+        
+        return jsonify({
+            "status": "completed", 
+            "response": response_text
+        })
             
     except Exception as e:
         logger.error(f"Error in mobile resume: {e}")
