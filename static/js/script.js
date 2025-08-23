@@ -1,4 +1,4 @@
-// static/js/script.js (Updated for Screensharing)
+// static/js/script.js (Updated with Session Management)
 
 document.addEventListener("DOMContentLoaded", () => {
     // --- DOM Elements ---
@@ -9,7 +9,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const promptInput = document.getElementById("prompt-input");
     const fileAttachBtn = document.getElementById("file-attach-btn");
     const urlAttachBtn = document.getElementById("url-attach-btn");
-    const screenshareAttachBtn = document.getElementById("screenshare-attach-btn"); // NEW
+    const screenshareAttachBtn = document.getElementById("screenshare-attach-btn");
     const fileInput = document.getElementById("file-input");
     const attachmentPreview = document.getElementById("attachment-preview");
     const menuToggleBtn = document.getElementById("menu-toggle-btn");
@@ -21,6 +21,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let currentChatId = null;
     let attachedFile = null;
     let attachedUrl = null;
+    let activeRequest = null; // Track active request
 
     // --- User GUID Management ---
     const getUserGuid = () => {
@@ -32,6 +33,20 @@ document.addEventListener("DOMContentLoaded", () => {
         return userGuid;
     };
     const userGuid = getUserGuid();
+
+    // --- Session Activity Tracking ---
+    let lastActivityTime = Date.now();
+    
+    // Update activity timestamp on user interaction
+    const updateActivity = () => {
+        lastActivityTime = Date.now();
+    };
+    
+    // Track user activity
+    document.addEventListener('click', updateActivity);
+    document.addEventListener('keypress', updateActivity);
+    document.addEventListener('scroll', updateActivity);
+    document.addEventListener('touchstart', updateActivity);
 
     // --- Mobile Sidebar Logic ---
     const toggleSidebar = () => {
@@ -177,6 +192,12 @@ document.addEventListener("DOMContentLoaded", () => {
     sidebarOverlay.addEventListener("click", closeSidebar);
 
     newChatBtn.addEventListener("click", () => {
+        // Abort any ongoing request
+        if (activeRequest) {
+            activeRequest.abort();
+            activeRequest = null;
+        }
+        
         currentChatId = null;
         messageContainer.innerHTML = "";
         showWelcomeScreen(true);
@@ -209,10 +230,15 @@ document.addEventListener("DOMContentLoaded", () => {
         if (attachedUrl) formData.append("website_url", attachedUrl);
 
         try {
+            // Create abort controller for this request
+            const controller = new AbortController();
+            activeRequest = controller;
+            
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'X-User-GUID': userGuid },
-                body: formData
+                body: formData,
+                signal: controller.signal
             });
 
             const newChatId = response.headers.get('X-Chat-Id');
@@ -237,14 +263,20 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
         } catch (error) {
-            console.error("Error during chat:", error);
-            botMessageElement.innerHTML = "Sorry, something went wrong. Please try again.";
+            if (error.name === 'AbortError') {
+                console.log('Request was aborted');
+                botMessageElement.innerHTML = "Request cancelled.";
+            } else {
+                console.error("Error during chat:", error);
+                botMessageElement.innerHTML = "Sorry, something went wrong. Please try again.";
+            }
         } finally {
+            activeRequest = null;
             resetAttachments();
         }
     });
 
-    // --- Attachment Logic (UPDATED) ---
+    // --- Attachment Logic ---
     fileAttachBtn.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
@@ -260,33 +292,24 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    // NEW: Screenshare logic for the seamless experience
+    // Screenshare logic
     screenshareAttachBtn.addEventListener('click', async () => {
         if (!navigator.mediaDevices?.getDisplayMedia) {
             alert("Your browser does not support screen sharing.");
             return;
         }
         try {
-            // 1. Ask the user what they want to share (tab, window, etc.)
             const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-
-            // 2. Grab the first video track from their selection
             const track = stream.getVideoTracks()[0];
-
-            // 3. Use ImageCapture API to take a single, high-quality snapshot
             const imageCapture = new ImageCapture(track);
             const bitmap = await imageCapture.grabFrame();
-
-            // 4. Important: Stop the screen sharing immediately after capture
             track.stop(); 
 
-            // 5. Draw the captured image onto a hidden canvas to convert it
             const canvas = document.createElement('canvas');
             canvas.width = bitmap.width;
             canvas.height = bitmap.height;
             canvas.getContext('2d').drawImage(bitmap, 0, 0);
 
-            // 6. Convert the canvas content to a PNG File object
             canvas.toBlob(blob => {
                 const screenshotFile = new File([blob], 'screenshot.png', { type: 'image/png' });
                 attachedFile = screenshotFile;
@@ -296,21 +319,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
         } catch (err) {
             console.error("Error during screen share:", err);
-            // This handles the case where the user clicks "Cancel" on the share dialog
             if (err.name !== 'NotAllowedError') {
                  alert("Could not start screen sharing.");
             }
         }
     });
 
-    // UPDATED: More flexible attachment preview to show a desktop icon
     const showAttachmentPreview = (name, type) => {
         attachmentPreview.style.display = 'flex';
-        let iconClass = 'fa-file-alt'; // default for 'file'
+        let iconClass = 'fa-file-alt';
         if (type === 'url') {
             iconClass = 'fa-link';
         } else if (type === 'screenshot') {
-            iconClass = 'fa-desktop'; // Use desktop icon for screen captures
+            iconClass = 'fa-desktop';
         }
         attachmentPreview.innerHTML = `<i class="fas ${iconClass}"></i><span>${name}</span><button id="remove-attachment-btn" type="button">&times;</button>`;
         document.getElementById('remove-attachment-btn').addEventListener('click', resetAttachments);
@@ -320,6 +341,23 @@ document.addEventListener("DOMContentLoaded", () => {
         attachedFile = null; attachedUrl = null; fileInput.value = "";
         attachmentPreview.style.display = 'none'; attachmentPreview.innerHTML = '';
     };
+
+    // Page Visibility API to handle tab switching
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            // Page is visible again, update activity
+            updateActivity();
+        }
+    });
+
+    // Check for session expiration every minute
+    setInterval(() => {
+        if (Date.now() - lastActivityTime > 300000) { // 5 minutes
+            if (confirm('Your session has expired due to inactivity. Would you like to refresh the page?')) {
+                window.location.reload();
+            }
+        }
+    }, 60000);
 
     // --- Initial Load ---
     loadChatHistory();
