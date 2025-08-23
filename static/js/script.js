@@ -1,4 +1,4 @@
-// static/js/script.js (Updated for Mobile Tab Switching and Screen Off)
+// static/js/script.js (Restored UI with Mobile Enhancements)
 
 document.addEventListener("DOMContentLoaded", () => {
     // --- DOM Elements ---
@@ -348,7 +348,6 @@ document.addEventListener("DOMContentLoaded", () => {
             });
 
             const newChatId = response.headers.get('X-Chat-Id');
-            const isMobile = response.headers.get('X-Is-Mobile') === 'true';
             const isNewChat = newChatId && newChatId !== currentChatId;
             if (isNewChat) currentChatId = newChatId;
 
