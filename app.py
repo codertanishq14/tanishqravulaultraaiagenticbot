@@ -1,4 +1,4 @@
-# app.py (Updated for Multi-User Support)
+# app.py (Fixed Inactivity and Tab Switching Issues)
 
 import os
 import json
@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 from PIL import Image
 import utils
+import time
 
 # --- INITIALIZATION ---
 load_dotenv()
@@ -31,7 +32,7 @@ vision_model = genai.GenerativeModel('gemini-2.5-flash')
 CHATS_DIR = "user_chats"
 os.makedirs(CHATS_DIR, exist_ok=True)
 
-# System instruction for Markdown formatting (no changes here)
+# System instruction for Markdown formatting
 SYSTEM_INSTRUCTION = {
     "role": "user",
     "parts": ["You are a helpful AI assistant. You must format all of your responses using Markdown. For tabular data, use Markdown tables. For code, use fenced code blocks with the language identifier (e.g., ```python)."]
@@ -41,11 +42,12 @@ SYSTEM_RESPONSE = {
     "parts": ["Okay, I understand. I will format all my responses in Markdown, using tables for data and fenced code blocks for code snippets."]
 }
 
+# Session management
+active_sessions = {}
 
-# --- NEW: USER-SPECIFIC CHAT HISTORY MANAGEMENT ---
+# --- USER-SPECIFIC CHAT HISTORY MANAGEMENT ---
 
 def get_user_chat_dir(user_guid):
-    """Gets the path to a user's chat directory, creating it if it doesn't exist."""
     if not user_guid or not isinstance(user_guid, str) or '..' in user_guid:
         raise ValueError("Invalid user GUID.")
     user_dir = os.path.join(CHATS_DIR, user_guid)
@@ -53,7 +55,6 @@ def get_user_chat_dir(user_guid):
     return user_dir
 
 def get_chat_history_list(user_guid):
-    """Lists chat history for a specific user."""
     user_dir = get_user_chat_dir(user_guid)
     files = os.listdir(user_dir)
     files.sort(key=lambda x: os.path.getmtime(os.path.join(user_dir, x)), reverse=True)
@@ -72,7 +73,6 @@ def get_chat_history_list(user_guid):
     return histories
 
 def load_chat_conversation(user_guid, chat_id):
-    """Loads a specific chat conversation for a user."""
     user_dir = get_user_chat_dir(user_guid)
     filepath = os.path.join(user_dir, f"{chat_id}.json")
     if os.path.exists(filepath):
@@ -81,13 +81,13 @@ def load_chat_conversation(user_guid, chat_id):
     return None
 
 def save_chat_conversation(user_guid, chat_id, conversation_data):
-    """Saves a chat conversation for a user."""
     user_dir = get_user_chat_dir(user_guid)
     filepath = os.path.join(user_dir, f"{chat_id}.json")
     with open(filepath, 'w') as f:
         json.dump(conversation_data, f, indent=2)
 
-# --- FLASK ROUTES (UPDATED FOR USER GUID) ---
+
+# --- FLASK ROUTES ---
 
 @app.route('/')
 def index():
@@ -126,7 +126,10 @@ def chat():
     if not prompt:
         return jsonify({"error": "Prompt is required."}), 400
 
-    # --- 2. PREPARE MODEL INPUT (No changes) ---
+    # Update session activity
+    active_sessions[user_guid] = time.time()
+
+    # --- 2. PREPARE MODEL INPUT ---
     model_input = [prompt]
     context_text = ""
     is_vision_request = False
@@ -148,12 +151,15 @@ def chat():
     if context_text:
         model_input[0] = f"Based on the following context:\n{context_text}\n\nUser query: {prompt}"
 
-    # --- 3. HANDLE CHAT HISTORY (UPDATED for user_guid) ---
+    # --- 3. HANDLE CHAT HISTORY ---
     if not chat_id or chat_id == 'null':
         chat_id = str(uuid.uuid4())
-        title_prompt = f"Create a very short, concise title (4-5 words max) for this user prompt: '{prompt}'"
-        title_response = text_model.generate_content(title_prompt)
-        chat_title = title_response.text.strip().replace('"', '')
+        try:
+            title_prompt = f"Create a very short, concise title (4-5 words max) for this user prompt: '{prompt}'"
+            title_response = text_model.generate_content(title_prompt)
+            chat_title = (title_response.text or "New Chat").strip().replace('"', '')
+        except Exception:
+            chat_title = "New Chat"
         conversation = {"title": chat_title, "messages": []}
     else:
         conversation = load_chat_conversation(user_guid, chat_id) or {"title": "Chat", "messages": []}
@@ -161,27 +167,69 @@ def chat():
     user_message = {"role": "user", "parts": [prompt]}
     conversation["messages"].append(user_message)
 
-    # --- 4. STREAM RESPONSE FROM GEMINI (UPDATED for user_guid) ---
+    # --- 4. STREAM RESPONSE FROM GEMINI (WITH ROBUST ERROR HANDLING) ---
     model = vision_model if is_vision_request else text_model
 
     def generate_and_stream():
         full_response = ""
         try:
-            gemini_history = [SYSTEM_INSTRUCTION, SYSTEM_RESPONSE] + [msg for msg in conversation["messages"] if 'parts' in msg]
+            # Check if session is still active
+            if user_guid not in active_sessions or time.time() - active_sessions[user_guid] > 300:  # 5 minute timeout
+                error_message = "⚠️ Session expired due to inactivity. Please refresh the page."
+                yield error_message
+                conversation["messages"].append({"role": "model", "parts": [error_message]})
+                save_chat_conversation(user_guid, chat_id, conversation)
+                return
+
+            gemini_history = [SYSTEM_INSTRUCTION, SYSTEM_RESPONSE] + [
+                msg for msg in conversation["messages"] if 'parts' in msg
+            ]
             chat_session = model.start_chat(history=gemini_history[:-1])
-            stream = chat_session.send_message(model_input, stream=True)
 
-            for chunk in stream:
-                if chunk.text:
-                    full_response += chunk.text
-                    yield chunk.text
+            def try_send_message(input_text, attempt=1):
+                """Try sending to Gemini, retry once if empty."""
+                nonlocal full_response
+                got_valid_text = False
 
+                try:
+                    stream = chat_session.send_message(input_text, stream=True)
+                    for chunk in stream:
+                        # Check if client is still connected
+                        if user_guid not in active_sessions:
+                            return
+                            
+                        if hasattr(chunk, "text") and chunk.text:
+                            got_valid_text = True
+                            full_response += chunk.text
+                            yield chunk.text
+
+                    # Retry once if Gemini returned nothing
+                    if not got_valid_text and attempt == 1:
+                        retry_input = f"Please provide a helpful, safe, and complete response to this user request: {input_text}"
+                        yield from try_send_message(retry_input, attempt=2)
+
+                    # Final fallback
+                    if not got_valid_text and attempt == 2:
+                        safe_msg = "I'm here to help, but I couldn't provide details for that request. Please try rephrasing."
+                        full_response = safe_msg
+                        yield safe_msg
+                except Exception as e:
+                    if attempt == 1:
+                        # Try one more time on error
+                        yield from try_send_message(input_text, attempt=2)
+                    else:
+                        raise e
+
+            # Run first attempt
+            yield from try_send_message(model_input)
+
+            # Save response
             conversation["messages"].append({"role": "model", "parts": [full_response]})
             save_chat_conversation(user_guid, chat_id, conversation)
 
         except Exception as e:
             print(f"Error during generation: {e}")
-            error_message = f"Sorry, an error occurred: {e}"
+            error_message = "⚠️ Sorry, something went wrong while generating your response. Please try again."
             yield error_message
             conversation["messages"].append({"role": "model", "parts": [error_message]})
             save_chat_conversation(user_guid, chat_id, conversation)
@@ -190,6 +238,15 @@ def chat():
     response.headers['X-Chat-Id'] = chat_id
     return response
 
+# Clean up inactive sessions periodically
+@app.before_request
+def cleanup_sessions():
+    current_time = time.time()
+    inactive_users = [user for user, last_active in active_sessions.items() 
+                     if current_time - last_active > 3600]  # 1 hour
+    for user in inactive_users:
+        active_sessions.pop(user, None)
+
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port, threaded=True)
