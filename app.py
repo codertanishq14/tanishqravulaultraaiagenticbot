@@ -1,4 +1,4 @@
-# app.py (Enhanced with 20-Retry Logic for Complete Responses)
+# app.py (Fixed Inactivity, Response Generation, and Screen Off Issues)
 
 import os
 import json
@@ -9,12 +9,6 @@ import google.generativeai as genai
 from PIL import Image
 import utils
 import time
-import threading
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # --- INITIALIZATION ---
 load_dotenv()
@@ -34,7 +28,7 @@ utils.initialize_mistral(api_key=MISTRAL_API_KEY)
 text_model = genai.GenerativeModel('gemini-2.5-flash')
 vision_model = genai.GenerativeModel('gemini-2.5-flash')
 
-# Main directory for all user chats
+# NEW: Main directory for all user chats
 CHATS_DIR = "user_chats"
 os.makedirs(CHATS_DIR, exist_ok=True)
 
@@ -48,12 +42,8 @@ SYSTEM_RESPONSE = {
     "parts": ["Okay, I understand. I will format all my responses in Markdown, using tables for data and fenced code blocks for code snippets."]
 }
 
-# Session management with extended timeout
+# Session management - now with much longer expiration
 active_sessions = {}
-# Track ongoing generations to resume if interrupted
-ongoing_generations = {}
-# Lock for thread-safe operations
-session_lock = threading.Lock()
 
 # --- USER-SPECIFIC CHAT HISTORY MANAGEMENT ---
 
@@ -79,7 +69,7 @@ def get_chat_history_list(user_guid):
                         "title": data.get("title", "Untitled Chat")
                     })
             except Exception as e:
-                logger.error(f"Error loading chat title for user {user_guid} from {filename}: {e}")
+                print(f"Error loading chat title for user {user_guid} from {filename}: {e}")
     return histories
 
 def load_chat_conversation(user_guid, chat_id):
@@ -96,109 +86,6 @@ def save_chat_conversation(user_guid, chat_id, conversation_data):
     with open(filepath, 'w') as f:
         json.dump(conversation_data, f, indent=2)
 
-# --- SESSION MANAGEMENT ---
-
-def update_session_activity(user_guid):
-    """Update session activity with thread safety"""
-    with session_lock:
-        active_sessions[user_guid] = time.time()
-
-def is_session_active(user_guid):
-    """Check if session is still active with generous timeout"""
-    with session_lock:
-        if user_guid not in active_sessions:
-            return False
-        # 24-hour session timeout
-        return time.time() - active_sessions[user_guid] < 86400
-
-def cleanup_inactive_sessions():
-    """Clean up inactive sessions periodically"""
-    with session_lock:
-        current_time = time.time()
-        inactive_users = [user for user, last_active in active_sessions.items() 
-                         if current_time - last_active > 86400]  # 24 hours
-        for user in inactive_users:
-            active_sessions.pop(user, None)
-            # Also clean up any ongoing generations for this user
-            if user in ongoing_generations:
-                ongoing_generations.pop(user, None)
-
-# --- ENHANCED RETRY LOGIC ---
-
-def generate_with_retries(model, prompt, max_retries=20):
-    """
-    Generate a response with extensive retry logic to ensure complete responses
-    """
-    full_response = ""
-    retry_count = 0
-    last_error = None
-    
-    while retry_count < max_retries:
-        try:
-            # Try to generate a response
-            response = model.generate_content(prompt)
-            
-            if response and response.text:
-                full_response = response.text
-                
-                # Check if the response seems complete
-                if is_response_complete(full_response):
-                    return full_response, True
-                else:
-                    # Response seems incomplete, try again with a different approach
-                    retry_count += 1
-                    logger.info(f"Response incomplete, retry {retry_count}/{max_retries}")
-                    
-                    # Vary the prompt slightly to get a better response
-                    if retry_count % 3 == 0:
-                        prompt = f"Please provide a more detailed and complete response to: {prompt}"
-                    elif retry_count % 3 == 1:
-                        prompt = f"Expand on your previous answer with more details: {prompt}"
-                    else:
-                        prompt = f"Provide a comprehensive response covering all aspects of: {prompt}"
-                    
-                    # Add a small delay between retries
-                    time.sleep(0.5)
-            else:
-                retry_count += 1
-                logger.info(f"Empty response, retry {retry_count}/{max_retries}")
-                
-        except Exception as e:
-            retry_count += 1
-            last_error = str(e)
-            logger.error(f"Error in generation (retry {retry_count}/{max_retries}): {e}")
-            
-            # Add a delay that increases with each retry
-            time.sleep(min(2, 0.5 * retry_count))
-    
-    # If we've exhausted all retries, return whatever we have or an error message
-    if full_response:
-        return full_response + "\n\n⚠️ Note: Response may be incomplete due to generation issues.", False
-    else:
-        error_msg = "⚠️ Sorry, I couldn't generate a complete response after multiple attempts."
-        if last_error:
-            error_msg += f" Error: {last_error}"
-        return error_msg, False
-
-def is_response_complete(response):
-    """
-    Heuristic check to determine if a response seems complete
-    """
-    # Check if the response ends with proper punctuation (not mid-sentence)
-    if response and response.strip():
-        last_char = response.strip()[-1]
-        if last_char in ['.', '!', '?', ';', ':']:
-            return True
-        
-        # Check if it ends with a code block or list item
-        if response.strip().endswith('```') or response.strip().endswith('-') or response.strip().endswith('*'):
-            return True
-            
-        # Check if it's a very short response (might be complete)
-        if len(response.split()) < 10:
-            return True
-            
-    return False
 
 # --- FLASK ROUTES ---
 
@@ -228,7 +115,21 @@ def keepalive():
     """Endpoint to keep session alive with periodic heartbeats"""
     user_guid = request.headers.get('X-User-GUID')
     if user_guid:
-        update_session_activity(user_guid)
+        # Check if this is a screen-on event (special header)
+        screen_off_duration = request.headers.get('X-Screen-Off-Duration')
+        if screen_off_duration:
+            try:
+                # If screen was off for a while, extend session more generously
+                off_duration = int(screen_off_duration)
+                if off_duration > 300:  # If screen was off for more than 5 minutes
+                    # Add extra time to account for the screen-off period
+                    active_sessions[user_guid] = time.time() + min(off_duration, 3600)  # Max 1 hour extra
+                    return jsonify({"status": "extended", "extra_seconds": min(off_duration, 3600)})
+            except ValueError:
+                pass
+                
+        # Normal heartbeat
+        active_sessions[user_guid] = time.time()
         return jsonify({"status": "ok"})
     return jsonify({"error": "User GUID is required."}), 400
 
@@ -248,8 +149,8 @@ def chat():
     if not prompt:
         return jsonify({"error": "Prompt is required."}), 400
 
-    # Update session activity
-    update_session_activity(user_guid)
+    # Update session activity - now with much longer expiration
+    active_sessions[user_guid] = time.time()
 
     # --- 2. PREPARE MODEL INPUT ---
     model_input = [prompt]
@@ -289,143 +190,90 @@ def chat():
     user_message = {"role": "user", "parts": [prompt]}
     conversation["messages"].append(user_message)
 
-    # --- 4. GENERATE RESPONSE WITH EXTENSIVE RETRY LOGIC ---
+    # --- 4. STREAM RESPONSE FROM GEMINI (WITH ROBUST ERROR HANDLING) ---
     model = vision_model if is_vision_request else text_model
 
     def generate_and_stream():
         full_response = ""
         try:
-            # Check if session is still active with generous timeout
-            if not is_session_active(user_guid):
+            # Check if session is still active - now with 24-hour timeout
+            if user_guid not in active_sessions or time.time() - active_sessions[user_guid] > 86400:  # 24 hour timeout
                 error_message = "⚠️ Session expired due to long inactivity. Please refresh the page."
                 yield error_message
                 conversation["messages"].append({"role": "model", "parts": [error_message]})
                 save_chat_conversation(user_guid, chat_id, conversation)
                 return
 
-            # Track this generation
-            with session_lock:
-                ongoing_generations[user_guid] = {
-                    "chat_id": chat_id,
-                    "prompt": prompt,
-                    "model_input": model_input,
-                    "is_vision": is_vision_request,
-                    "start_time": time.time()
-                }
+            gemini_history = [SYSTEM_INSTRUCTION, SYSTEM_RESPONSE] + [
+                msg for msg in conversation["messages"] if 'parts' in msg
+            ]
+            chat_session = model.start_chat(history=gemini_history[:-1])
 
-            # For mobile devices or when we need to ensure complete responses,
-            # use our enhanced retry logic instead of streaming
-            response_text, success = generate_with_retries(model, model_input)
-            
-            # Stream the response in chunks to simulate real-time generation
-            words = response_text.split()
-            chunk_size = max(1, len(words) // 20)  # Split into approximately 20 chunks
-            
-            for i in range(0, len(words), chunk_size):
-                if not is_session_active(user_guid):
-                    break
-                chunk = " ".join(words[i:i+chunk_size]) + " "
-                full_response += chunk
-                yield chunk
-                time.sleep(0.05)  # Small delay to simulate streaming
+            def try_send_message(input_text, attempt=1):
+                """Try sending to Gemini, retry with improved prompt if empty."""
+                nonlocal full_response
+                got_valid_text = False
+
+                try:
+                    stream = chat_session.send_message(input_text, stream=True)
+                    for chunk in stream:
+                        # Check if client is still connected
+                        if user_guid not in active_sessions:
+                            return
+                            
+                        if hasattr(chunk, "text") and chunk.text:
+                            got_valid_text = True
+                            full_response += chunk.text
+                            yield chunk.text
+
+                    # Retry with improved prompt if Gemini returned nothing
+                    if not got_valid_text and attempt <= 3:  # Try up to 3 times
+                        if attempt == 1:
+                            retry_input = f"Please provide a helpful, safe, and complete response to this user request: {input_text}"
+                        elif attempt == 2:
+                            retry_input = f"I didn't receive a response. Please answer this query in detail: {input_text}"
+                        else:
+                            retry_input = f"Provide a comprehensive response to: {input_text}"
+                            
+                        yield from try_send_message(retry_input, attempt=attempt+1)
+
+                    # Final fallback
+                    if not got_valid_text and attempt > 3:
+                        safe_msg = "I'm here to help, but I couldn't provide details for that request. Please try rephrasing."
+                        full_response = safe_msg
+                        yield safe_msg
+                except Exception as e:
+                    if attempt <= 2:  # Retry on error
+                        yield from try_send_message(input_text, attempt=attempt+1)
+                    else:
+                        raise e
+
+            # Run first attempt
+            yield from try_send_message(model_input)
 
             # Save response
             conversation["messages"].append({"role": "model", "parts": [full_response]})
             save_chat_conversation(user_guid, chat_id, conversation)
 
-            # Clean up ongoing generation tracking
-            with session_lock:
-                if user_guid in ongoing_generations:
-                    ongoing_generations.pop(user_guid, None)
-
         except Exception as e:
-            logger.error(f"Error during generation: {e}")
-            
-            # Try one final time with a fresh generation
-            try:
-                response_text, success = generate_with_retries(model, model_input, max_retries=5)
-                yield response_text
-                
-                # Save the final response
-                conversation["messages"].append({"role": "model", "parts": [response_text]})
-                save_chat_conversation(user_guid, chat_id, conversation)
-                
-            except Exception as final_error:
-                logger.error(f"Final generation attempt also failed: {final_error}")
-                error_message = "⚠️ Sorry, something went wrong while generating your response. Please try again."
-                yield error_message
-                conversation["messages"].append({"role": "model", "parts": [error_message]})
-                save_chat_conversation(user_guid, chat_id, conversation)
-            
-            # Clean up ongoing generation tracking
-            with session_lock:
-                if user_guid in ongoing_generations:
-                    ongoing_generations.pop(user_guid, None)
+            print(f"Error during generation: {e}")
+            error_message = "⚠️ Sorry, something went wrong while generating your response. Please try again."
+            yield error_message
+            conversation["messages"].append({"role": "model", "parts": [error_message]})
+            save_chat_conversation(user_guid, chat_id, conversation)
 
     response = Response(stream_with_context(generate_and_stream()), mimetype='text/plain')
     response.headers['X-Chat-Id'] = chat_id
     return response
 
-@app.route('/api/mobile-resume', methods=['POST'])
-def mobile_resume():
-    """Special endpoint for mobile devices to resume interrupted generations"""
-    user_guid = request.headers.get('X-User-GUID')
-    if not user_guid:
-        return jsonify({"error": "User GUID is required."}), 400
-        
-    chat_id = request.form.get('chat_id')
-    prompt = request.form.get('prompt')
-    
-    if not chat_id or not prompt:
-        return jsonify({"error": "Chat ID and prompt are required."}), 400
-        
-    # Try to resume the generation
-    conversation = load_chat_conversation(user_guid, chat_id) or {"title": "Chat", "messages": []}
-    
-    # Check if we already have a response
-    if conversation.get("messages") and conversation["messages"][-1].get("role") == "model":
-        return jsonify({
-            "status": "completed", 
-            "response": conversation["messages"][-1]["parts"][0]
-        })
-    
-    # Try to generate a new response with enhanced retry logic
-    try:
-        model = text_model  # Default to text model for resuming
-        
-        # Use our enhanced retry logic to ensure a complete response
-        response_text, success = generate_with_retries(model, prompt, max_retries=20)
-        
-        # Save the response
-        conversation["messages"].append({"role": "model", "parts": [response_text]})
-        save_chat_conversation(user_guid, chat_id, conversation)
-        
-        return jsonify({
-            "status": "completed", 
-            "response": response_text
-        })
-            
-    except Exception as e:
-        logger.error(f"Error in mobile resume: {e}")
-        return jsonify({
-            "status": "error", 
-            "message": "Internal server error"
-        }), 500
-
-# Clean up inactive sessions periodically
+# Clean up inactive sessions periodically - now with 24-hour expiration
 @app.before_request
-def cleanup_sessions_before_request():
-    cleanup_inactive_sessions()
-
-# Background thread for periodic cleanup
-def periodic_cleanup():
-    while True:
-        time.sleep(3600)  # Clean up every hour
-        cleanup_inactive_sessions()
-
-# Start cleanup thread
-cleanup_thread = threading.Thread(target=periodic_cleanup, daemon=True)
-cleanup_thread.start()
+def cleanup_sessions():
+    current_time = time.time()
+    inactive_users = [user for user, last_active in active_sessions.items() 
+                     if current_time - last_active > 86400]  # 24 hours
+    for user in inactive_users:
+        active_sessions.pop(user, None)
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8000))
